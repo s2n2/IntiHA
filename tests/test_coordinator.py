@@ -610,3 +610,35 @@ async def test_new_discovery_during_battery_read_does_not_break_polling(coordina
 
     assert coordinator.devices[ADDRESS].battery == 75
     assert OTHER_ADDRESS in coordinator.devices
+
+
+async def test_identified_bond_requests_pairing_before_first_connection(coordinator):
+    await coordinator._async_engine_message(
+        {
+            "type": "discovered",
+            "address": ADDRESS,
+            "name": "Bond",
+            "protocols": ["wevibe-8bit"],
+        },
+        coordinator.bridge.epoch,
+    )
+    assert coordinator._requires_pairing(ADDRESS)
+    assert coordinator._persisted_state()["devices"][ADDRESS]["pairing_required"] is True
+
+
+async def test_learned_pairing_requirement_survives_restart(coordinator):
+    coordinator._store.async_load.return_value = {
+        "devices": {ADDRESS: {"name": "Device", "pairing_required": True}},
+    }
+    await coordinator.async_initialize()
+    assert coordinator._requires_pairing(ADDRESS)
+
+
+async def test_other_discovered_devices_are_not_forced_to_pair(coordinator):
+    await coordinator._async_engine_message(
+        {"type": "discovered", "address": ADDRESS, "name": "Nova", "protocols": ["wevibe"]},
+        coordinator.bridge.epoch,
+    )
+    assert not coordinator._requires_pairing(ADDRESS)
+    coordinator._require_pairing(ADDRESS)
+    assert coordinator._requires_pairing(ADDRESS)

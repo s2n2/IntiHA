@@ -106,5 +106,9 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
     def extra_state_attributes(self):
         if self.address and self.key == "device_status":
             device = self.coordinator.devices[self.address]
-            return {"last_error": device.error, "connection_phase": device.phase}
+            return {
+                "last_error": device.error,
+                "connection_phase": device.phase,
+                "ble_pairing_required": device.pairing_required,
+            }
         return None

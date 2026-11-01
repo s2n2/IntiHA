@@ -1,0 +1,33 @@
+IntiHA 0.2.7 - GitHub repository patch
+
+This patch is based on the supplied IntiHA 0.2.6 source. It changes the
+HACS integration's runtime code, not the Rust engine or ESPHome firmware.
+
+ZIP route:
+Extract this archive. Copy its .github/, custom_components/, docs/, tests/
+and tools/ directories, and CHANGELOG.md and README.md, over their matching
+paths at the ROOT of your GitHub checkout. Commit and push the changes.
+Do not create an extra nested custom_components/intiha folder.
+
+Git patch route (from a 0.2.6 checkout):
+  git apply --check /path/to/IntiHA-v0.2.7.patch
+  git apply /path/to/IntiHA-v0.2.7.patch
+  git add -A
+  git commit -m "Request BLE pairing and fix nested connection retries"
+  git push
+
+Run the repository's normal GitHub Actions checks. Create the v0.2.7 tag;
+the existing release workflow creates a draft release after validation.
+Review and publish that draft for HACS. The patch updates release generation
+so an integration-only release can keep the unchanged engine version.
+
+In Home Assistant:
+Update/redownload IntiHA 0.2.7 in HACS and restart Home Assistant.
+Do not rebuild the Engine app: 0.2.4 and 0.2.5 remain compatible.
+The device Firmware display is the Engine version. Check HACS for 0.2.7.
+Use the Bond's normal pairing mode for the initial encrypted connection;
+avoid simultaneous phone/remote connections during that test.
+
+Read docs/BLUETOOTH_SECURITY_REVIEW.md for exact scope and evidence.
+Read docs/VALIDATION.md for tests and remaining limitations. No physical
+Bond, ESPHome radio or full HA runtime was available for this patch.

@@ -20,7 +20,7 @@ def main() -> int:
         (target / "conftest.py").write_text(
             STUBS.replace("__REPOSITORY_ROOT__", repr(str(root))), encoding="utf-8"
         )
-        for name in ("test_ble.py", "test_bridge.py"):
+        for name in ("test_ble.py", "test_bridge.py", "test_security.py", "test_security_state_source.py"):
             (target / name).write_bytes((root / "tests" / name).read_bytes())
         (target / "pytest.ini").write_text(
             "[pytest]\nasyncio_mode=auto\nasyncio_default_fixture_loop_scope=function\n",

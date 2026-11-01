@@ -59,9 +59,17 @@ class FakeClient:
         self.write_started = asyncio.Event()
         self.write_release = asyncio.Event()
         self.fail_writes = False
+        self.pair_requested = _kwargs.get("pair", False)
 
     async def connect(self):
         self.is_connected = True
+        if self.pair_requested:
+            await self.pair()
+
+    async def pair(self):
+        self.operations.append(("pair",))
+        # Current Bleak returns None, not a truthy acknowledgement.
+        return None
 
     async def disconnect(self):
         self.operations.append(("disconnect",))
@@ -562,7 +570,154 @@ async def test_prepare_stop_rejects_stale_connection_id(radio):
 async def test_connection_deadline_has_useful_error_and_cleans_client(radio, monkeypatch):
     monkeypatch.setattr(ble, "CONNECT_TIMEOUT", 0.01)
     radio.gate = asyncio.Event()
-    with pytest.raises(ble.BleBridgeError, match="connection/service discovery timed out"):
+    with pytest.raises(ble.BleBridgeError, match="connection/pairing/service discovery timed out"):
         await radio.request("connect")
     assert not radio.bridge.connected_addresses
+    assert radio.clients[0].operations == [("disconnect",)]
+
+
+async def test_pairing_policy_reaches_backend_before_service_response(radio):
+    radio.bridge._requires_pairing = lambda address: address == ADDRESS
+    result = await radio.request("connect")
+    assert result["connection_id"] == "first"
+    assert radio.clients[0].pair_requested is True
+    assert radio.clients[0].operations == [("pair",)]
+    assert radio.bridge._connections[ADDRESS].pairing_requested is True
+    # Pairing alone must not create a verified stop plan.
+    assert radio.bridge._connections[ADDRESS].stop_plan == ()
+
+
+async def test_normal_devices_are_not_forced_to_pair(radio):
+    await radio.request("connect")
+    assert radio.clients[0].pair_requested is False
+    assert radio.clients[0].operations == []
+
+
+async def test_security_rejection_teaches_next_connection_without_replaying_output(radio):
+    learned = []
+    radio.bridge._on_pairing_required = learned.append
+    await radio.request("connect")
+    client = radio.clients[0]
+
+    async def reject(characteristic, data, *, response):
+        client.operations.append(("rejected", bytes(data)))
+        raise RuntimeError(
+            "Bluetooth GATT Error handle=27 error=15 description=Insufficient encryption"
+        )
+
+    client.write_gatt_char = reject
+    with pytest.raises(ble.BleBridgeError, match="Insufficient encryption"):
+        await radio.write([80])
+    assert learned == [ADDRESS]
+    assert client.operations == [("rejected", b"\x50"), ("disconnect",)]
+    assert not radio.bridge.connected_addresses
+    await radio.request("connect", "new-session")
+    replacement = radio.clients[-1]
+    assert replacement.pair_requested
+    assert replacement.operations == [("pair",)]
+    assert radio.bridge._connections[ADDRESS].stop_plan == ()
+
+
+async def test_stop_encryption_failure_learns_security_and_stays_unverified(radio):
+    await radio.request("connect")
+    client = radio.clients[0]
+
+    async def reject(*_args, **_kwargs):
+        raise RuntimeError("Bluetooth GATT Error error=15 description=Insufficient encryption")
+
+    client.write_gatt_char = reject
+    with pytest.raises(ble.BleBridgeError, match="Insufficient encryption"):
+        await radio.request(
+            "prepare_stop",
+            writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+        )
+    assert ADDRESS in radio.bridge._pairing_required
+    assert not radio.bridge.connected_addresses
+    await radio.request("connect", "encrypted-session")
+    result = await radio.request(
+        "prepare_stop",
+        "encrypted-session",
+        writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+    )
+    assert result["verified"] is True
+    assert radio.clients[-1].operations == [("pair",), ("write", CHARACTERISTIC, b"\x00", True)]
+
+
+async def test_pairing_not_supported_does_not_fall_back_to_unencrypted(radio, monkeypatch):
+    class Unsupported(FakeClient):
+        async def pair(self):
+            raise NotImplementedError("Pairing is not available in this version ESPHome")
+
+    monkeypatch.setattr(ble, "BleakClientWithServiceCache", Unsupported)
+    radio.bridge._requires_pairing = lambda _address: True
+    with pytest.raises(ble.BleBridgeError, match="cannot perform the requested pairing"):
+        await radio.request("connect")
+    assert not radio.bridge.connected_addresses
+    assert len(radio.clients) == 1
+    assert radio.clients[0].operations == [("disconnect",)]
+
+
+async def test_pairing_failure_cleans_up_instead_of_enabling_device(radio, monkeypatch):
+    class BadPair(FakeClient):
+        async def pair(self):
+            raise RuntimeError("Pairing failed due to error: 82")
+
+    monkeypatch.setattr(ble, "BleakClientWithServiceCache", BadPair)
+    radio.bridge._requires_pairing = lambda _address: True
+    with pytest.raises(ble.BleBridgeError, match="Pairing failed due to error: 82"):
+        await radio.request("connect")
+    assert not radio.bridge.connected_addresses
+    assert not radio.clients[0].is_connected
+
+
+async def test_engine_owns_retry_even_for_helper_transient_errors(radio, monkeypatch):
+    class RetryableError(Exception):
+        pass
+
+    attempts = []
+
+    class Flaky(FakeClient):
+        async def connect(self, **_kwargs):
+            attempts.append(1)
+            raise RetryableError("ESP_GATT_CONN_TERMINATE_PEER_USER")
+
+    async def transient_retry_helper(client_class, device, name, **kwargs):
+        # Models the upstream library's separate transient retry budget.
+        client = client_class(device, **kwargs)
+        radio.clients.append(client)
+        for _attempt in range(9):
+            try:
+                await client.connect()
+                return client
+            except RetryableError:
+                pass
+        raise AssertionError("Inner helper exhausted nine physical attempts")
+
+    monkeypatch.setattr(ble, "BleakClientWithServiceCache", Flaky)
+    monkeypatch.setattr(ble, "establish_connection", transient_retry_helper)
+    with pytest.raises(ble.BleBridgeError, match="ESP_GATT_CONN_TERMINATE_PEER_USER"):
+        await radio.request("connect")
+    assert len(attempts) == 1
+    assert radio.clients[0].operations == [("disconnect",)]
+    # HCI peer termination is not proof of an ATT security rejection.
+    assert ADDRESS not in radio.bridge._pairing_required
+
+
+async def test_cancel_during_pairing_releases_link_and_propagates(radio, monkeypatch):
+    entered = asyncio.Event()
+
+    class SlowPair(FakeClient):
+        async def pair(self):
+            entered.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(ble, "BleakClientWithServiceCache", SlowPair)
+    radio.bridge._requires_pairing = lambda _address: True
+    task = asyncio.create_task(radio.request("connect"))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not radio.bridge.connected_addresses
+    assert not radio.bridge._connecting
     assert radio.clients[0].operations == [("disconnect",)]

@@ -13,11 +13,18 @@ connects them to Home Assistant's Bluetooth network and provides the HA
 controls and sensors. Home Assistant Container users can run the same engine
 with Docker Compose.
 
-**Version 0.2.4 - connection and stop-initialisation revision.** Update both
-components together. This patch passed 45 isolated Python transport tests
-with fake radio/HA imports. Its new Rust/Bond regression tests, full HA suite
-and Docker image still need to pass in GitHub Actions. Physical device and
-room-to-room coverage testing remains necessary.
+**Version 0.2.7 - BLE security negotiation and bounded connection attempts.**
+The integration now requests pairing for a Bond identified by the engine's
+`wevibe-8bit` profile, and learns other devices' requirements from explicit
+ATT authentication/encryption errors. It does not replay failed movement
+commands. The existing real stop-write verification still gates controls.
+One backend connection call is allowed per engine-owned attempt, rather than
+letting the retry helper silently make up to nine transient-error attempts.
+The Engine app may remain on **0.2.4 or 0.2.5**. No engine protocol, ESPHome
+configuration or Wi-Fi changes are needed for this patch. Physical Bond
+validation and multi-proxy roaming are still outstanding. See the
+[security and specification review](docs/BLUETOOTH_SECURITY_REVIEW.md).
+
 This is an independent project, not an official Intiface or Home Assistant
 product.
 
@@ -29,12 +36,63 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
+| **0.2.7** | Request BLE pairing for identified Bond / learned ATT security requirements; prevent the hidden nine-attempt retry loop; retain verified stops and no command replay. HACS-only runtime update. |
+| **0.2.6** | Remove automatic Bluetooth scan sweeps introduced in 0.2.5; retain manual Search and automatic advertisement discovery; improve scan deduplication. HACS only. |
+| **0.2.5** | Make Search perform an actual HA Bluetooth active sweep; add bounded periodic discovery for devices not visible from passive advertisements. HACS-only runtime change; the 0.2.4 Engine is compatible. |
 | **0.2.4** | Separate driver stop-packet generation from real GATT verification; atomic write-and-cache acknowledgement; serialised connection attempts; useful connection-stage diagnostics. Update both HACS and the Engine app. |
 | **0.2.3** | Restore control for verified classic We-Vibe devices when the upstream stopped-state command produces no Bluetooth writes; retain stop-on-disconnect and add detailed diagnostics. |
 | **0.2.2** | Fix Docker installation without relying on a separately published `engine/licenses/` folder; collect upstream dependency licences during the Rust build. |
 | **0.2.1** | Fix IntiHA Engine app installation by including the full dependency-licence directory in the GitHub repository; add release-history visibility and build checks. No configuration changes. |
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
+
+## Updating to 0.2.7
+
+Update the **IntiHA HACS integration** and restart Home Assistant. The
+**IntiHA Engine app does not need rebuilding**; versions 0.2.4 and 0.2.5
+remain compatible. The device page's Firmware value reports the engine
+version; check HACS for the integration version.
+
+For the first encrypted connection, the peripheral may need its normal
+pairing mode. Keep other phone/remote controllers disconnected during this
+initial test. A proxy must support BLE pairing as well as active GATT
+connections. Unsupported pairing fails with a specific error; the integration
+does not silently fall back to an unencrypted control path.
+
+The device Status entity has a `ble_pairing_required` attribute. This means
+IntiHA will request pairing on its next connection. It is **not** a live
+"encrypted" sensor, and does not enable controls by itself. Controls still
+require completed device initialisation and the real stop write.
+
+The Git patch targets the supplied 0.2.6 source. The replacement-file ZIP can
+be overlaid at the repository root. Do not copy the archive into
+`custom_components/intiha` as an extra nested folder.
+
+## Updating from 0.2.5
+
+Install **IntiHA 0.2.6** through HACS and restart Home Assistant. The
+**IntiHA Engine app does not need an update**, and can remain on 0.2.4 or
+0.2.5. Engine protocol and Bluetooth stop handling are unchanged. Normal
+advertisements still discover supported devices automatically. If a device
+needs an active scan to reveal its services or name, use **Search devices**;
+IntiHA will not run active sweeps automatically while trying to establish
+continuous GATT connections.
+
+If all IntiHA controls and diagnostics show **unavailable**, first check
+Settings > Devices & services > IntiHA and Home Assistant **Core** logs for a
+config-entry or platform exception. Engine BLE errors alone should not make
+master controls unavailable. Only then investigate Bluetooth transport.
+
+## Updating from 0.2.4
+
+Install the **0.2.5 HACS integration** and restart Home Assistant. The Engine
+may remain on 0.2.4; its bridge protocol has not changed. The repo also bumps
+Engine packaging metadata to 0.2.5 for a consistent GitHub release, but
+rebuilding the Engine is **not required** for this discovery hotfix. Search
+now starts a real active sweep through Home Assistant's existing adapters.
+If a peripheral still does not appear, check whether it advertises in the
+Bluetooth network map and whether Buttplug supports its protocol. Discovery
+and connection are separate operations.
 
 ## Updating from 0.2.3
 

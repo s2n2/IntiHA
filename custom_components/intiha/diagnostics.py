@@ -23,6 +23,7 @@ async def async_get_config_entry_diagnostics(hass, entry):
         "devices": [
             {
                 "connected": device.connected,
+                "ble_pairing_required": device.pairing_required,
                 "vibration_features": len(device.scalar_features()),
                 "battery_read_supported": device.battery_index() is not None,
             }

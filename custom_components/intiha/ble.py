@@ -21,6 +21,8 @@ from uuid import UUID
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
 
+from .security import is_gatt_security_error
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
@@ -69,6 +71,7 @@ class _Connection:
     client: Any
     subscriptions: set[str] = field(default_factory=set)
     stop_plan: tuple[_StopWrite, ...] = ()
+    pairing_requested: bool = False
 
 
 class BleBridge:
@@ -85,10 +88,16 @@ class BleBridge:
         hass: HomeAssistant,
         emit: Callable[[dict[str, Any]], Awaitable[None]],
         is_allowed: Callable[[str], bool],
+        *,
+        requires_pairing: Callable[[str], bool] | None = None,
+        on_pairing_required: Callable[[str], None] | None = None,
     ) -> None:
         self._hass = hass
         self._emit = emit
         self._is_allowed = is_allowed
+        self._requires_pairing = requires_pairing
+        self._on_pairing_required = on_pairing_required
+        self._pairing_required: set[str] = set()
         self._running = False
         self._resetting = False
         self._epoch = 0
@@ -289,6 +298,7 @@ class BleBridge:
                         connection.subscriptions.remove(uuid)
                         await connection.client.stop_notify(characteristic)
             except BaseException as err:
+                self._learn_security_requirement(address, err)
                 # An uncertain write must never be silently retried, nor can
                 # queued commands continue on a link whose state is unknown.
                 if self._connections.get(address) is connection:
@@ -341,6 +351,7 @@ class BleBridge:
                 ):
                     raise BleBridgeError("Bluetooth link lost before stop verification completed")
         except BaseException as err:
+            self._learn_security_requirement(connection.address, err)
             if self._connections.get(connection.address) is connection:
                 self._connections.pop(connection.address)
                 await self._close_connection(connection, "stop_verification_failed")
@@ -383,6 +394,9 @@ class BleBridge:
         self._used_order.append(key)
         if len(self._used_order) > MAX_RETIRED_IDS:
             self._used_ids.discard(self._used_order.popleft())
+        pairing_required = address in self._pairing_required or bool(
+            self._requires_pairing and self._requires_pairing(address)
+        )
         self._connecting.add(address)
         created: list[Any] = []
 
@@ -393,7 +407,43 @@ class BleBridge:
                 super().__init__(*args, **kwargs)
                 created.append(self)
 
+            async def connect(self, **kwargs: Any) -> None:
+                """One backend call; leave application backoff to the IntiHA engine.
+
+                bleak-retry-connector's max_attempts does not cap transient
+                errors (its separate budget can be nine). Convert the first
+                failure to our bridge exception so that inner loop exits.
+                No global retry-library settings are changed.
+                """
+                try:
+                    await super().connect(**kwargs)
+                except asyncio.CancelledError:
+                    raise
+                except NotImplementedError as err:
+                    if pairing_required:
+                        raise BleBridgeError(
+                            "Selected Bluetooth backend cannot perform the requested pairing; "
+                            "use a pairing-capable ESPHome proxy or supported local adapter"
+                        ) from err
+                    raise BleBridgeError(
+                        "Selected Bluetooth backend does not implement the requested connection"
+                    ) from err
+                except Exception as err:
+                    detail = str(err).strip() or type(err).__name__
+                    stage = (
+                        "connect/pair/service discovery"
+                        if pairing_required
+                        else "connect/service discovery"
+                    )
+                    raise BleBridgeError(f"BLE {stage} failed: {detail}") from err
+
         try:
+            _LOGGER.debug(
+                "Opening BLE session %s for %s; pairing_requested=%s",
+                connection_id,
+                address,
+                pairing_required,
+            )
             async with asyncio.timeout(CONNECT_TIMEOUT):
                 client = await establish_connection(
                     TrackedClient,
@@ -402,11 +452,14 @@ class BleBridge:
                     disconnected_callback=lambda client: self._connection_lost(
                         address, connection_id, "link_lost", client=client
                     ),
-                    # The engine owns the retry/backoff state machine. One
-                    # bounded attempt here avoids two proxy attempts overrunning
-                    # the RPC deadline and producing an empty TimeoutError.
+                    # pair=True is handled by the selected backend after
+                    # link-up and before service access. Never pair the HA
+                    # server's local adapter behind the proxy's back.
+                    pair=pairing_required,
+                    # The TrackedClient boundary enforces one attempt even
+                    # for errors the helper classifies as transient.
                     max_attempts=1,
-                    timeout=15.0,
+                    timeout=20.0,
                 )
             if (
                 not self._running
@@ -416,17 +469,20 @@ class BleBridge:
                 or not client.is_connected
             ):
                 raise BleBridgeError("Connection was revoked or lost while connecting")
-            connection = _Connection(address, connection_id, client)
+            connection = _Connection(
+                address, connection_id, client, pairing_requested=pairing_required
+            )
             result = self._services(connection)
             self._connections[address] = connection
         except BaseException as err:
+            self._learn_security_requirement(address, err)
             for pending in created:
                 await self._disconnect_client(pending)
             if isinstance(err, asyncio.CancelledError):
                 raise
             if isinstance(err, TimeoutError):
                 raise BleBridgeError(
-                    f"BLE connection/service discovery timed out after {CONNECT_TIMEOUT:g}s"
+                    f"BLE connection/pairing/service discovery timed out after {CONNECT_TIMEOUT:g}s"
                 ) from err
             raise
         finally:
@@ -435,6 +491,27 @@ class BleBridge:
             {"type": "connected", "address": address, "connection_id": connection_id}
         )
         return result
+
+    def _learn_security_requirement(self, address: str, error: BaseException) -> None:
+        """Remember explicit ATT denial; never replay a failed movement write.
+
+        A subsequent fresh session requests pairing before service access,
+        then goes through the existing real stop-verification gate again.
+        Persist the requirement via the coordinator, not the encryption keys:
+        keys belong to the selected Bluetooth controller.
+        """
+        if not is_gatt_security_error(error):
+            return
+        if address in self._pairing_required:
+            return
+        self._pairing_required.add(address)
+        if self._on_pairing_required is not None:
+            self._on_pairing_required(address)
+        _LOGGER.warning(
+            "Device %s rejected GATT access because Bluetooth security is required; "
+            "requesting pairing on its next connection. No movement command is replayed.",
+            address,
+        )
 
     @staticmethod
     def _services(connection: _Connection) -> dict[str, Any]:
