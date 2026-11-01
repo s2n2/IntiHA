@@ -1,0 +1,98 @@
+# Validation record: IntiHA 0.1.0
+
+Date: 1 November 2026.
+
+This record distinguishes software verification from physical Bluetooth and
+deployment verification. No physical toys, Shelly devices or ESPHome radios
+were accessible in the development environment.
+
+## Environment
+
+| Component | Version |
+|---|---|
+| Home Assistant | 2026.10.4 |
+| Python | 3.14.8 |
+| Rust | 1.99.1 |
+| buttplug_server | 12.0.2 |
+| buttplug_core | 11.0.2 |
+| buttplug_server_device_config | 12.0.1 |
+| Bleak | 3.0.2 |
+| Bleak Retry Connector | 4.7.1 |
+| habluetooth | 7.1.2 |
+
+## Executed checks
+
+| Check | Result |
+|---|---|
+| Complete Python test suite, including mandatory system tests | **84 passed** |
+| Rust unit/regression tests | **11 passed** |
+| Rust real TCP/WebSocket integration tests | **4 passed** |
+| Ruff checks and formatting | Passed |
+| Cargo formatting and clippy with warnings denied | Passed |
+| Home Assistant 2026.10.4 hassfest | **23 validation plugins; 1 integration; 0 invalid; no warnings** |
+| Official HACS manifest schemas | Passed |
+| Project JSON/YAML/TOML parsing and version consistency | Passed |
+| App startup shell syntax and invalid-credential cases | Passed |
+
+The final Python suite was run with `INTIHA_REQUIRE_SYSTEM_TESTS=1` so a missing
+engine executable would fail the gate. Home Assistant's checks for leftover
+tasks and timers remained enabled; no cleanup exemptions were used.
+
+Hassfest was pinned to Home Assistant core commit
+`357cae5c598dfcd7a0ea7dc5b1facccd4ec6037b`. The HACS checks used the official
+manifest, integration-manifest and integration-category schemas. The full HACS
+GitHub Action was not run locally: it requires the published repository and
+authenticated GitHub metadata access.
+
+## What the combined system tests establish
+
+These tests launch the actual compiled Rust engine as a separate process,
+load the real integration and entity platforms in Home Assistant, use the
+actual authenticated WebSocket bridge, and simulate only the BLE radio.
+
+- An upstream WeVibe Nova profile is recognised and two real HA vibration
+  entities are created. A real HA number service call produces the expected
+  characteristic writes.
+- The classic We-Vibe initialisation pulse is replaced with a stop packet.
+  The official driver's stop writes are captured and installed in HA before
+  the device is marked ready.
+- Killing the engine process triggers HA's cached stop and disconnect path.
+  Restarting reconnects with a new connection ID and does not replay output.
+- Failed stop writes propagate across the real engine/bridge boundary and
+  leave the unconfirmed-stop status visible.
+- The actual external Buttplug v3 handshake, authentication, one-controller
+  restriction and exclusion of competing HA movement work together.
+
+The Rust integration tests additionally exercise v4 negotiation and verify
+that an old HA movement request is rejected after reconnect even when the
+public Buttplug device index is reused. Ready-link loss invalidates an
+external controller's session before it can target the new connection.
+
+## Failure and cleanup coverage
+
+Tests cover device approval/revocation, per-device serialisation, bounded
+requests, cancelled connects, stale BLE notifications/disconnects, writes
+queued behind a failure, notification overflow, stop-before-disconnect order,
+independent manual timeout, uncertain stops surviving an empty inventory or
+restart, and local off/stop enforcement before a stalled engine reply.
+
+WebSocket regressions cover shutdown during a handshake, simultaneous
+reconnect/close, closing from a receiver callback and cancellation while
+socket cleanup is already underway. These checks found and resolved a real
+heartbeat-timer leak before packaging.
+
+## Checks still needed after publication
+
+1. **Native container builds.** Docker was unavailable locally. CI is provided
+   to build and health-check the app on amd64 and aarch64. Run it before
+   installing the initial app release.
+2. **Full remote HACS validation.** Publish the source and set the repository's
+   description/topics so the HACS action can inspect the real repository.
+3. **Physical device and room testing.** Follow
+   [HARDWARE_TESTING.md](HARDWARE_TESTING.md) with the actual device models and
+   proxy firmware. Software simulation cannot establish radio coverage,
+   physical stop behaviour or uninterrupted roaming.
+
+The release is an initial implementation for hardware evaluation. These
+results support its software behaviour and failure handling; they are not a
+claim of guaranteed physical safety or guaranteed radio reliability.

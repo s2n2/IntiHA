@@ -1,0 +1,207 @@
+{
+  "title": "IntiHA",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect IntiHA",
+        "description": "Install the IntiHA engine app as well as this integration. Setup is allowed while the app is offline. The master switch starts off. Only ESPHome active Bluetooth proxies or supported local adapters can control devices; Shelly proxies provide advertisements only.",
+        "data": {
+          "engine_url": "Engine bridge URL",
+          "bridge_token": "Bridge token"
+        },
+        "data_description": {
+          "engine_url": "For example ws://192.168.0.10:12346/bridge. Use the address of the HA app host.",
+          "bridge_token": "Use the separate bridge token from the IntiHA app, at least 32 characters."
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Enter a ws:// or wss:// URL ending in /bridge, without a token, credentials, query or fragment.",
+      "invalid_token": "Use 32 to 256 printable ASCII characters, with no whitespace.",
+      "invalid_address": "Use comma-separated Bluetooth addresses, for example AA:BB:CC:DD:EE:FF. Maximum 32 devices."
+    },
+    "abort": {
+      "already_configured": "IntiHA is already configured. Use its options to change settings."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "IntiHA options",
+        "menu_options": {
+          "devices": "Choose devices",
+          "connection": "Engine connection",
+          "behaviour": "Reconnect and timeouts"
+        }
+      },
+      "connection": {
+        "title": "Engine connection",
+        "data": {
+          "engine_url": "Engine bridge URL",
+          "bridge_token": "Bridge token"
+        },
+        "data_description": {
+          "engine_url": "For example ws://192.168.0.10:12346/bridge. Use the address of the HA app host.",
+          "bridge_token": "Use the separate bridge token from the IntiHA app, at least 32 characters."
+        }
+      },
+      "devices": {
+        "title": "Choose devices",
+        "description": "Turn IntiHA on, press Search devices on the IntiHA device page, then reopen this form. Only devices you select can connect. Connections use an available active proxy. Native pairing or special Bluetooth features may not work through a proxy.",
+        "data": {
+          "selected_devices": "Approved devices",
+          "manual_addresses": "Additional addresses (comma separated)"
+        },
+        "data_description": {
+          "manual_addresses": "Optional: add a known Bluetooth MAC address when a device is not currently advertising."
+        }
+      },
+      "behaviour": {
+        "title": "Reconnect and timeouts",
+        "data": {
+          "auto_reconnect": "Automatically reconnect approved devices",
+          "control_timeout": "Stop manual controls after (seconds)",
+          "scan_duration": "Search duration (seconds)"
+        },
+        "data_description": {
+          "control_timeout": "Home Assistant movement commands expire after this time without a new movement command. External clients use their own negotiated heartbeat.",
+          "auto_reconnect": "Reconnect through a suitable available proxy. Prior movement commands are never replayed."
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Enter a ws:// or wss:// URL ending in /bridge, without a token, credentials, query or fragment.",
+      "invalid_token": "Use 32 to 256 printable ASCII characters, with no whitespace.",
+      "invalid_address": "Use comma-separated Bluetooth addresses, for example AA:BB:CC:DD:EE:FF. Maximum 32 devices."
+    }
+  },
+  "entity": {
+    "switch": {
+      "enabled": {
+        "name": "Enabled"
+      }
+    },
+    "button": {
+      "search": {
+        "name": "Search devices"
+      },
+      "stop_all": {
+        "name": "Stop all"
+      },
+      "reconnect": {
+        "name": "Reconnect"
+      },
+      "stop": {
+        "name": "Stop"
+      }
+    },
+    "binary_sensor": {
+      "engine_connected": {
+        "name": "Engine connected"
+      },
+      "client_connected": {
+        "name": "External client connected"
+      },
+      "scanning": {
+        "name": "Searching"
+      },
+      "stop_unconfirmed": {
+        "name": "Stop unconfirmed"
+      },
+      "connected": {
+        "name": "Connected"
+      }
+    },
+    "number": {
+      "level": {
+        "name": "Vibration {number}"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "disabled": "Disabled",
+          "connecting": "Connecting",
+          "ready": "Ready",
+          "stop_unconfirmed": "Stop unconfirmed"
+        }
+      },
+      "device_status": {
+        "name": "Status",
+        "state": {
+          "disabled": "Disabled",
+          "offline": "Offline",
+          "connected": "Connected"
+        }
+      },
+      "engine_address": {
+        "name": "Engine address"
+      },
+      "control_owner": {
+        "name": "Control owner",
+        "state": {
+          "none": "None",
+          "home_assistant": "Home Assistant",
+          "external_client": "External client"
+        }
+      },
+      "connected_devices": {
+        "name": "Connected devices"
+      },
+      "discovered_devices": {
+        "name": "Discovered devices"
+      },
+      "active_proxies": {
+        "name": "Active Bluetooth adapters"
+      },
+      "last_error": {
+        "name": "Last error"
+      },
+      "battery": {
+        "name": "Battery"
+      },
+      "signal_strength": {
+        "name": "Last advertised signal strength"
+      },
+      "last_seen_via": {
+        "name": "Last seen via"
+      },
+      "last_seen": {
+        "name": "Last seen"
+      }
+    }
+  },
+  "services": {
+    "stop_all": {
+      "name": "Stop all",
+      "description": "Attempt to stop all reachable IntiHA devices. A disconnected device cannot receive a stop command.",
+      "fields": {
+        "entry_id": {
+          "name": "Integration",
+          "description": "Optional IntiHA configuration entry."
+        }
+      }
+    },
+    "scan": {
+      "name": "Search devices",
+      "description": "Search for supported Bluetooth devices for the configured duration. Select discovered devices in integration options.",
+      "fields": {
+        "entry_id": {
+          "name": "Integration",
+          "description": "Optional IntiHA configuration entry."
+        }
+      }
+    },
+    "reconnect": {
+      "name": "Reconnect",
+      "description": "Stop reachable devices and create a fresh engine connection. No movement values are replayed.",
+      "fields": {
+        "entry_id": {
+          "name": "Integration",
+          "description": "Optional IntiHA configuration entry."
+        }
+      }
+    }
+  }
+}

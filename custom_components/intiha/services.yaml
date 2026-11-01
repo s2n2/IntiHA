@@ -1,0 +1,21 @@
+stop_all:
+  fields:
+    entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: intiha
+scan:
+  fields:
+    entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: intiha
+reconnect:
+  fields:
+    entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: intiha
