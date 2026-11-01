@@ -1,0 +1,479 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index dc1f246..ab1267a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,24 @@
+ # Changelog
+ 
++## 0.2.5
++
++Home Assistant Bluetooth discovery hotfix. The HACS integration is the only
++runtime component changed; the compatible Engine may remain on 0.2.4.
++
++- Search devices now requests a real Home Assistant on-demand active scan,
++  rather than only resending cached Bluetooth advertisements. This includes
++  ESPHome scanners left in Auto (passive) mode. The scan runs in the
++  background so the Search button does not block until it finishes.
++- Request one active sweep when IntiHA first connects or is re-enabled, and
++  refresh periodically at a bounded interval (every three minutes) while on.
++  Normal listening remains managed by Home Assistant; no separate BLE scanner.
++- Forward the updated advertisements after the sweep completes so newly
++  identifiable compatible devices can enter Buttplug's normal connection flow.
++- Keep GATT connections, stop verification, connection retries and disabled
++  controls unchanged. This does not claim to resolve the Bond's peer-terminated
++  connection: discovery and successful GATT setup are different stages.
++- Include active-scan regression checks; no physical hardware verification.
++
+ ## 0.2.4
+ 
+ Connection and stop-preparation revision. Update the HACS integration and
+diff --git a/README.md b/README.md
+index 28d9587..1bb3bee 100644
+--- a/README.md
++++ b/README.md
+@@ -13,11 +13,11 @@ connects them to Home Assistant's Bluetooth network and provides the HA
+ controls and sensors. Home Assistant Container users can run the same engine
+ with Docker Compose.
+ 
+-**Version 0.2.4 - connection and stop-initialisation revision.** Update both
+-components together. This patch passed 45 isolated Python transport tests
+-with fake radio/HA imports. Its new Rust/Bond regression tests, full HA suite
+-and Docker image still need to pass in GitHub Actions. Physical device and
+-room-to-room coverage testing remains necessary.
++**Version 0.2.5 - Bluetooth discovery improvement.** The HACS integration
++now requests genuine active scans on Search, at startup, and periodically.
++The Engine can remain at 0.2.4 because the bridge protocol is unchanged.
++This patch does not resolve the separate Bond GATT connection failure.
++Physical device and room-to-room coverage testing remain necessary.
+ This is an independent project, not an official Intiface or Home Assistant
+ product.
+ 
+@@ -29,6 +29,7 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
+ 
+ | Version | What changed |
+ |---|---|
++| **0.2.5** | Make Search perform an actual HA Bluetooth active sweep; add bounded periodic discovery for devices not visible from passive advertisements. HACS-only runtime change; the 0.2.4 Engine is compatible. |
+ | **0.2.4** | Separate driver stop-packet generation from real GATT verification; atomic write-and-cache acknowledgement; serialised connection attempts; useful connection-stage diagnostics. Update both HACS and the Engine app. |
+ | **0.2.3** | Restore control for verified classic We-Vibe devices when the upstream stopped-state command produces no Bluetooth writes; retain stop-on-disconnect and add detailed diagnostics. |
+ | **0.2.2** | Fix Docker installation without relying on a separately published `engine/licenses/` folder; collect upstream dependency licences during the Rust build. |
+@@ -36,6 +37,17 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
+ | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
+ | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
+ 
++## Updating from 0.2.4
++
++Install the **0.2.5 HACS integration** and restart Home Assistant. The Engine
++may remain on 0.2.4; its bridge protocol has not changed. The repo also bumps
++Engine packaging metadata to 0.2.5 for a consistent GitHub release, but
++rebuilding the Engine is **not required** for this discovery hotfix. Search
++now starts a real active sweep through Home Assistant's existing adapters.
++If a peripheral still does not appear, check whether it advertises in the
++Bluetooth network map and whether Buttplug supports its protocol. Discovery
++and connection are separate operations.
++
+ ## Updating from 0.2.3
+ 
+ Stop the Engine app first. Update the HACS integration to **0.2.4** and restart
+diff --git a/custom_components/intiha/const.py b/custom_components/intiha/const.py
+index afd1951..8be0920 100644
+--- a/custom_components/intiha/const.py
++++ b/custom_components/intiha/const.py
+@@ -3,7 +3,7 @@
+ from homeassistant.const import Platform
+ 
+ DOMAIN = "intiha"
+-VERSION = "0.2.4"
++VERSION = "0.2.5"
+ PLATFORMS = [
+     Platform.BINARY_SENSOR,
+     Platform.BUTTON,
+diff --git a/custom_components/intiha/coordinator.py b/custom_components/intiha/coordinator.py
+index 9c1f7cd..b44156f 100644
+--- a/custom_components/intiha/coordinator.py
++++ b/custom_components/intiha/coordinator.py
+@@ -105,6 +105,7 @@ class IntiHACoordinator:
+         self._state_lock = asyncio.Lock()
+         self._last_advertisement: dict[str, float] = {}
+         self._scan_until = 0.0
++        self._next_active_sweep = 0.0
+         self._store = Store[dict[str, Any]](hass, 1, f"{DOMAIN}.{entry.entry_id}")
+         self._cancel_timer: Callable[[], None] | None = None
+         self.ble = BleBridge(
+@@ -252,6 +253,10 @@ class IntiHACoordinator:
+                     if enabled and self.engine_connected:
+                         self._last_advertisement.clear()
+                         self._spawn(self._async_send_cached(self.bridge.epoch), "enable discovery")
++                        self._spawn(
++                            self._async_active_scan(self.bridge.epoch, 10),
++                            "enable active BLE scan",
++                        )
+             except BridgeError as err:
+                 self.last_error = self._safe_error(err)
+                 if enabled:
+@@ -277,12 +282,48 @@ class IntiHACoordinator:
+             self._last_advertisement.clear()
+             for advertisement in self.ble.discovered():
+                 await self._async_ble_event({**advertisement, "type": "advertisement"})
++            # The engine's scan command does not start a radio sweep. HA now
++            # defaults many ESPHome proxies to AUTO/passive; a wildcard
++            # Bluetooth callback alone does not request active scan responses.
++            self._spawn(
++                self._async_active_scan(self.bridge.epoch, seconds),
++                "requested active BLE scan",
++            )
+         except BridgeError as err:
+             self.scanning = False
+             self._scan_until = 0
+             self._notify()
+             raise HomeAssistantError(self._safe_error(err)) from err
+ 
++    async def _async_active_scan(self, epoch: int, seconds: float) -> None:
++        """Ask HA's AUTO scanners for fresh scan responses without a new scanner.
++
++        Only HA owns adapters, including ESPHome proxies. Avoid holding the
++        UI's Search button while the on-demand radio sweep is in progress.
++        A retired engine session must not receive advertisements afterward.
++        """
++        try:
++            await bluetooth.async_request_active_scan(
++                self.hass, duration=min(float(seconds), 15.0)
++            )
++        except asyncio.CancelledError:
++            raise
++        except Exception as err:
++            _LOGGER.warning(
++                "IntiHA could not request an active Bluetooth scan: %s",
++                self._safe_error(err),
++            )
++            return
++        if (
++            self._shutdown
++            or not self.enabled
++            or not self.engine_connected
++            or epoch != self.bridge.epoch
++        ):
++            return
++        self._last_advertisement.clear()
++        await self._async_send_cached(epoch)
++
+     async def async_stop_all(self) -> None:
+         async with self._state_lock:
+             await self._async_stop_all_locked()
+@@ -410,6 +451,8 @@ class IntiHACoordinator:
+             self.version = message.get("version")
+             self._last_advertisement.clear()
+             self._spawn(self._async_send_cached(epoch), "cached advertisements")
++            if self.enabled:
++                self._spawn(self._async_active_scan(epoch, 10), "initial active BLE scan")
+         elif kind == "status":
+             self.client_connected = bool(message.get("client_connected", False))
+             self.scanning = bool(message.get("scanning", False))
+@@ -659,7 +702,19 @@ class IntiHACoordinator:
+ 
+     async def _async_tick(self, _now: datetime) -> None:
+         self._notify()
+-        if not self.enabled or not self.engine_connected or self.client_connected:
++        if not self.enabled or not self.engine_connected:
++            return
++        # An unfiltered ACTIVE callback is not itself an active-scan request
++        # on HA 2026.6+. Give newly powered-on devices a bounded periodic
++        # discovery opportunity without continuous active scanning.
++        now = self.hass.loop.time()
++        if now >= self._next_active_sweep:
++            self._next_active_sweep = now + 180
++            self._spawn(
++                self._async_active_scan(self.bridge.epoch, 10),
++                "periodic active BLE discovery",
++            )
++        if self.client_connected:
+             return
+         for device in tuple(self.devices.values()):
+             sensor_index = device.battery_index()
+diff --git a/custom_components/intiha/manifest.json b/custom_components/intiha/manifest.json
+index 6e06604..6863585 100644
+--- a/custom_components/intiha/manifest.json
++++ b/custom_components/intiha/manifest.json
+@@ -10,5 +10,5 @@
+   "iot_class": "local_push",
+   "issue_tracker": "https://github.com/s2n2/IntiHA/issues",
+   "requirements": [],
+-  "version": "0.2.4"
++  "version": "0.2.5"
+ }
+diff --git a/docs/VALIDATION.md b/docs/VALIDATION.md
+index 1314659..8de7af1 100644
+--- a/docs/VALIDATION.md
++++ b/docs/VALIDATION.md
+@@ -171,3 +171,18 @@ The 0.2.1 patch includes the dependency-licence directory in the repository
+ patch, adds an early file-presence check before the CI Docker build, and
+ updates the app/integration/Cargo versions. This does not imply that a physical
+ HA OS install or Docker image build was executed in this environment.
++
++## 0.2.5 Bluetooth discovery patch (1 November 2026)
++
++- Source-only regression tests for the Home Assistant active-scan lifecycle:
++  **4 passed**. These use AST-extracted production coordinator methods and fake
++  Bluetooth APIs; they do not represent real radio testing.
++- Existing BLE transport tests against production `ble.py` with stubbed
++  Home Assistant and Bluetooth backends: **33 passed**.
++- Python syntax compilation and Git patch reverse-application checks passed.
++- Home Assistant 2026.6 and newer document `bluetooth.async_request_active_scan`,
++  so this call is supported by the documented 2026.10 minimum release.
++- Rust engine connection logic and stop protocol are unchanged; a 0.2.4
++  engine remains bridge-compatible with the 0.2.5 HACS integration.
++- NOT RUN: full Home Assistant/hassfest/HACS CI, Rust build/tests, Docker
++  installation, or tests with actual Bond and ESPHome hardware.
+diff --git a/engine/BRIDGE_PROTOCOL.md b/engine/BRIDGE_PROTOCOL.md
+index b912f49..e49077d 100644
+--- a/engine/BRIDGE_PROTOCOL.md
++++ b/engine/BRIDGE_PROTOCOL.md
+@@ -12,7 +12,7 @@ HA first sends:
+ {"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60}
+ ```
+ 
+-The engine replies `{"type":"hello","protocol":1,"version":"0.2.4"}`.
++The engine replies `{"type":"hello","protocol":1,"version":"0.2.5"}`.
+ The socket establishes a new generation; previous pending RPCs and BLE sessions
+ must never survive it. `connection_id` is a new UUID for each physical connect.
+ The address is uppercase. No command is replayed after reconnection.
+diff --git a/engine/Cargo.lock b/engine/Cargo.lock
+index 9fcf029..476f17b 100644
+--- a/engine/Cargo.lock
++++ b/engine/Cargo.lock
+@@ -973,7 +973,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "intiha-engine"
+-version = "0.2.4"
++version = "0.2.5"
+ dependencies = [
+  "anyhow",
+  "async-trait",
+diff --git a/engine/Cargo.toml b/engine/Cargo.toml
+index 5d69b43..587437d 100644
+--- a/engine/Cargo.toml
++++ b/engine/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "intiha-engine"
+-version = "0.2.4"
++version = "0.2.5"
+ edition = "2024"
+ rust-version = "1.99"
+ license = "BSD-3-Clause"
+diff --git a/engine/Dockerfile b/engine/Dockerfile
+index 2b44ab7..ee5aef0 100644
+--- a/engine/Dockerfile
++++ b/engine/Dockerfile
+@@ -31,7 +31,7 @@ RUN set -eu; \
+ 
+ FROM debian:bookworm-slim
+ 
+-ARG BUILD_VERSION=0.2.4
++ARG BUILD_VERSION=0.2.5
+ ARG BUILD_ARCH
+ LABEL io.hass.version="${BUILD_VERSION}" \
+       io.hass.type="app" \
+diff --git a/engine/config.yaml b/engine/config.yaml
+index 6854f21..5a723df 100644
+--- a/engine/config.yaml
++++ b/engine/config.yaml
+@@ -1,5 +1,5 @@
+ name: IntiHA Engine
+-version: "0.2.4"
++version: "0.2.5"
+ slug: intiha_engine
+ description: Buttplug server using the IntiHA integration and Home Assistant Bluetooth proxies
+ url: https://github.com/s2n2/IntiHA
+diff --git a/tests/test_active_scan_source.py b/tests/test_active_scan_source.py
+new file mode 100644
+index 0000000..8ba503c
+--- /dev/null
++++ b/tests/test_active_scan_source.py
+@@ -0,0 +1,186 @@
++"""Standalone regression checks for the real coordinator's active scan methods.
++
++Use the production AST so these tests do not require a running Home Assistant;
++they verify scan lifecycle and epoch safety, not actual ESPHome radio behaviour.
++"""
++
++from __future__ import annotations
++
++import ast
++import asyncio
++import logging
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++
++SOURCE = Path(__file__).resolve().parents[1] / "custom_components/intiha/coordinator.py"
++
++
++def _methods(*names: str, bluetooth):
++    parsed = ast.parse(SOURCE.read_text())
++    coordinator = next(
++        node
++        for node in parsed.body
++        if isinstance(node, ast.ClassDef) and node.name == "IntiHACoordinator"
++    )
++    found = [
++        node
++        for node in coordinator.body
++        if isinstance(node, ast.AsyncFunctionDef) and node.name in names
++    ]
++    assert {node.name for node in found} == set(names)
++    functions = ast.Module(body=found, type_ignores=[])
++    ast.fix_missing_locations(functions)
++    scope = {
++        "asyncio": asyncio,
++        "bluetooth": bluetooth,
++        "_LOGGER": logging.getLogger(__name__),
++        "BridgeError": RuntimeError,
++        "HomeAssistantError": RuntimeError,
++        "CONF_SCAN_DURATION": "scan_duration",
++        "DEFAULT_SCAN_DURATION": 30,
++    }
++    exec(compile(functions, str(SOURCE), "exec"), scope)
++    return tuple(scope[name] for name in names)
++
++
++@pytest.mark.asyncio
++async def test_search_requests_active_sweep_without_waiting_for_scan_to_finish():
++    entered = asyncio.Event()
++    release = asyncio.Event()
++    cached = [{"address": "AA", "name": "Bond"}]
++    events = []
++
++    async def fake_scan(_hass, *, duration):
++        assert duration == 15.0
++        entered.set()
++        await release.wait()
++        cached.append({"address": "BB", "name": "Second compatible device"})
++
++    bluetooth = SimpleNamespace(async_request_active_scan=fake_scan)
++    async_scan, active_scan = _methods(
++        "async_scan", "_async_active_scan", bluetooth=bluetooth
++    )
++
++    class Subject:
++        enabled = True
++        _shutdown = False
++        engine_connected = True
++        _scan_until = 0
++        scanning = False
++        _last_advertisement = {}
++        config = {"scan_duration": 45}
++        hass = SimpleNamespace(loop=asyncio.get_running_loop())
++        bridge = SimpleNamespace(
++            connected=True, epoch=7, request=AsyncMock(return_value={})
++        )
++        ble = SimpleNamespace(discovered=lambda: list(cached))
++
++        def __init__(self):
++            self.tasks = []
++
++        def _notify(self):
++            pass
++
++        async def _async_ble_event(self, message):
++            events.append(message)
++
++        def _spawn(self, task, _name):
++            self.tasks.append(asyncio.create_task(task))
++
++        async def _async_send_cached(self, epoch):
++            assert epoch == self.bridge.epoch
++            for entry in self.ble.discovered():
++                await self._async_ble_event({**entry, "type": "advertisement"})
++
++    subject = Subject()
++    subject._async_active_scan = active_scan.__get__(subject, Subject)
++    await async_scan(subject)
++    assert [e["address"] for e in events] == ["AA"]
++    assert len(subject.tasks) == 1
++    await entered.wait()
++    release.set()
++    await asyncio.gather(*subject.tasks)
++    assert [e["address"] for e in events] == ["AA", "AA", "BB"]
++    subject.bridge.request.assert_awaited_once_with("scan", seconds=45)
++
++
++@pytest.mark.asyncio
++async def test_retired_engine_generation_does_not_receive_post_scan_data():
++    called = []
++    async def fake_scan(_hass, *, duration):
++        called.append(duration)
++
++    (active_scan,) = _methods(
++        "_async_active_scan",
++        bluetooth=SimpleNamespace(async_request_active_scan=fake_scan),
++    )
++
++    class Subject:
++        _shutdown = False
++        enabled = True
++        engine_connected = True
++        hass = object()
++        bridge = SimpleNamespace(epoch=99)
++        _last_advertisement = {"AA": 1.0}
++        send_cache = AsyncMock()
++
++        async def _async_send_cached(self, epoch):
++            await self.send_cache(epoch)
++
++    subject = Subject()
++    await active_scan(subject, 98, 10)
++    assert called == [10.0]
++    assert subject._last_advertisement == {"AA": 1.0}
++    subject.send_cache.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_active_sweep_error_does_not_disconnect_engine():
++    async def broken_scan(_hass, *, duration):
++        raise OSError("scan not supported")
++
++    (active_scan,) = _methods(
++        "_async_active_scan",
++        bluetooth=SimpleNamespace(async_request_active_scan=broken_scan),
++    )
++
++    class Subject:
++        _shutdown = False
++        enabled = True
++        engine_connected = True
++        hass = object()
++        bridge = SimpleNamespace(epoch=2)
++        _last_advertisement = {"AA": 1.0}
++        send_cache = AsyncMock()
++
++        _safe_error = staticmethod(str)
++
++        async def _async_send_cached(self, epoch):
++            await self.send_cache(epoch)
++
++    subject = Subject()
++    await active_scan(subject, 2, 10)
++    assert subject._last_advertisement == {"AA": 1.0}
++    subject.send_cache.assert_not_awaited()
++
++
++def test_periodic_sweep_rate_is_bounded():
++    parsed = ast.parse(SOURCE.read_text())
++    coordinator = next(
++        node
++        for node in parsed.body
++        if isinstance(node, ast.ClassDef) and node.name == "IntiHACoordinator"
++    )
++    tick = next(
++        node
++        for node in coordinator.body
++        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_async_tick"
++    )
++    assert any(isinstance(n, ast.Constant) and n.value == 180 for n in ast.walk(tick))
++    assert any(
++        isinstance(n, ast.Attribute) and n.attr == "_next_active_sweep"
++        for n in ast.walk(tick)
++    )

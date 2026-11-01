@@ -1,53 +1,41 @@
-IntiHA 0.2.4 - GitHub patch for the supplied 0.2.3 source
+IntiHA v0.2.5 - Home Assistant Bluetooth active discovery hotfix
+===============================================================
 
-Update BOTH the HACS integration and Engine app. No ESPHome reflash required.
+This patch is based on the IntiHA 0.2.4 source supplied in this conversation.
+It improves DISCOVERY, not the separate Bond GATT peer-disconnect problem.
 
-This ZIP contains only changed/new files with repository-relative paths.
-Extract locally, then copy its contents over the matching repository paths.
-Do not upload the ZIP as a single file expecting Home Assistant to use it.
-Do not delete unchanged repository files. Do not copy this instruction file
-into custom_components/intiha or the engine build directory.
-
-Alternatively, use the separately supplied IntiHA-v0.2.4.patch:
-  git apply --check IntiHA-v0.2.4.patch
-  git apply IntiHA-v0.2.4.patch
+Option A - from an existing v0.2.4 Git checkout:
+  git apply --check IntiHA-v0.2.5.patch
+  git apply IntiHA-v0.2.5.patch
   git add -A
-  git commit -m "Revise IntiHA connection and atomic stop preparation"
+  git commit -m "Request actual Home Assistant active Bluetooth scans"
   git push
 
-Run the existing GitHub Actions validation before publishing a v0.2.4 release.
-Formatting checks and the full Rust/HA/Docker suite are not locally verified.
-The release workflow creates a draft; publish it after checking validation.
-README.md contains the HACS-visible version history and CHANGELOG.md supplies
-release notes.
+Option B - manually copy the paths under files/ to corresponding repository
+paths, preserving directories. Files under files/ contain only files that
+change; they are not a complete repository. Do not copy APPLY_PATCH.txt or
+this .patch file into custom_components.
 
-HOME ASSISTANT UPDATE ORDER
-1. Stop the IntiHA Engine app.
-2. Update/redownload IntiHA in HACS to 0.2.4; restart Home Assistant.
-3. Refresh App Store repositories, update/rebuild IntiHA Engine to 0.2.4,
-   then start the app. Confirm its startup log reports version 0.2.4.
-4. Leave IntiHA enabled. A device progresses through connecting, initialising,
-   verifying_stop and connected. No tokens, approval lists or C3 changes.
+Release: tag v0.2.5 after CI checks and publish the GitHub draft release so
+HACS receives the new version and release notes.
 
-WHAT WAS VALIDATED
-45 Python transport tests passed with real production transport modules and
-fake HA imports / fake Bluetooth radio. This is NOT a live HA, compiled Rust
-engine or physical Bond test. Run:
-  python tools/run_offline_transport_tests.py
-Requires pytest, pytest-asyncio, aiohttp.
+Installation:
+  1. HACS -> IntiHA -> Redownload/update the integration to 0.2.5.
+  2. Restart Home Assistant Core.
+  3. The existing IntiHA Engine app v0.2.4 may remain running: there is no
+     bridge API change. The app metadata is bumped to 0.2.5 for release
+     consistency, but rebuilding/reinstalling it is NOT required here.
+  4. With the second device advertising, press Search devices. The HACS
+     integration now requests a real on-demand active scan from HA.
 
-Patch application to the supplied 0.2.3 baseline, changed Python compilation,
-release-version consistency, and JSON/YAML/TOML parsing passed. New Rust tests
-exercise the official Bond profile, failed stop gating, packet capture,
-connection-attempt deduplication and descriptive timeout failures. They are
-included for CI but have NOT been executed locally. Rust, Docker and full HA
-were unavailable. See docs/VALIDATION.md.
+Notes:
+  - Device compatibility still depends on the Buttplug protocol definitions.
+    If Home Assistant's Bluetooth map sees the second device but IntiHA does
+    not, capture its model/name and advertisement data for protocol diagnosis.
+  - A discovered device is not necessarily connected. The Bond's 9-attempt
+    ESP_GATT_CONN_TERMINATE_PEER_USER failure remains a separate problem.
+  - AUTO scanners receive the sweep; explicitly PASSIVE scanners stay passive.
 
-SAFETY
-Driver-packet capture is not proof that a stop reached the device. Controls
-remain blocked until HA has cached and completed the real stop writes on the
-same connection and acknowledged the matching connection ID/write count.
-Failure, timeout or cancellation keeps controls disabled and closes the link.
-The real GATT deadline remains 10 seconds; the outer RPC deadline now also
-allows bounded cleanup and error reporting. Lost-link movement is not replayed.
-A transport acknowledgement is not measured motor feedback.
+Local validation:
+  4 active-scan coordinator tests, 33 existing BLE transport tests passed.
+  Syntax, patch-apply, and metadata checks passed. No physical hardware test.
