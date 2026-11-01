@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.2
+
+Engine installation hotfix.
+
+- Fix the recurring `"/licenses": not found` Docker error. The image now
+  collects pinned Rust dependency licence files from the Cargo registry
+  sources inside the builder stage, so Home Assistant does not need an
+  `engine/licenses/` directory in the published app repository.
+- Extend CI to verify the resulting image actually contains the Buttplug
+  dependency licence notices, in addition to checking that the app starts.
+- Keep HACS-visible version history and GitHub release notes current.
+- No changes to device discovery, Bluetooth behaviour, settings or tokens.
+
 ## 0.2.1
 
 App installation and release visibility maintenance release.

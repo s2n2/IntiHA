@@ -1,3 +1,12 @@
+## 0.2.2 packaging correction (validation status)
+
+- The image build no longer copies `engine/licenses/` from the Docker context.
+- A builder-stage step collects upstream licences from the pinned Cargo packages.
+- CI now checks the compiled app image contains three key Buttplug licences.
+- Static Dockerfile assertions and a shell fixture of the licence-collection step
+  passed during patch preparation. Full Docker image builds were not available
+  in this environment and must pass in GitHub Actions / Home Assistant.
+
 # Validation record: IntiHA 0.2.1 (prior tests from 0.2.0)
 
 Date: 1 November 2026.

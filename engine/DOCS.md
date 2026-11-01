@@ -4,7 +4,7 @@ A local Buttplug server using Home Assistant's Bluetooth network. The engine
 runs the official Buttplug device protocols; the **IntiHA HACS integration**
 supplies Bluetooth connections, HA controls and status sensors. Install both.
 
-Version 0.2.1 requires no IntiHA tokens or device approval. Compatible devices
+Version 0.2.2 requires no IntiHA tokens or device approval. Compatible devices
 are found and connected automatically while the master switch is on.
 
 ## Home Assistant OS: install and start

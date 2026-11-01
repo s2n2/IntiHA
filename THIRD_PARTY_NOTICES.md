@@ -9,10 +9,11 @@ IntiHA uses the official Buttplug libraries without vendoring or renaming their 
 | buttplug_server_device_config | 12.0.1 | BSD-3-Clause |
 
 Buttplug is copyright Nonpolynomial Labs, LLC and contributors. The original
-copyright notices and licence terms are included in
-[engine/licenses](engine/licenses/README.md), alongside notices for the locked
-Rust dependency graph. The app image installs those texts under
-`/usr/share/licenses/intiha/`.
+copyright notices and licence terms are collected directly from the pinned
+Rust dependency sources while the app image is built (see
+[engine/Cargo.lock](engine/Cargo.lock)). The image installs these files under
+`/usr/share/licenses/intiha/dependencies/`. This avoids requiring the large
+`engine/licenses/` source directory in the Home Assistant app repository.
 
 Home Assistant, Bleak, Bleak Retry Connector and the HA Bluetooth stack are
 separate runtime dependencies supplied by Home Assistant; their code is not

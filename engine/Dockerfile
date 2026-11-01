@@ -10,9 +10,28 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release --locked --bin intiha-engine
 
+# Package the original dependency licences from the exact Cargo registry
+# sources used for this build.  The Supervisor only sends engine/ as the
+# Docker build context, and a separate licenses/ directory may be absent.
+RUN set -eu; \
+    registry="${CARGO_HOME:-/usr/local/cargo}/registry/src"; \
+    test -d "$registry"; \
+    mkdir -p /build/dependency-licenses; \
+    printf '%s\n' 'Licences collected from the Cargo packages used to build IntiHA.' \
+      > /build/dependency-licenses/README.txt; \
+    for crate in "$registry"/*/*; do \
+      [ -d "$crate" ] || continue; \
+      crate_name="$(basename "$crate")"; \
+      for notice in "$crate"/LICENSE* "$crate"/COPYING* "$crate"/NOTICE* "$crate"/UNLICENSE*; do \
+        [ -f "$notice" ] || continue; \
+        mkdir -p "/build/dependency-licenses/$crate_name"; \
+        cp "$notice" "/build/dependency-licenses/$crate_name/"; \
+      done; \
+    done
+
 FROM debian:bookworm-slim
 
-ARG BUILD_VERSION=0.2.1
+ARG BUILD_VERSION=0.2.2
 ARG BUILD_ARCH
 LABEL io.hass.version="${BUILD_VERSION}" \
       io.hass.type="app" \
@@ -28,7 +47,7 @@ RUN apt-get update \
 COPY --from=builder /build/target/release/intiha-engine /usr/local/bin/intiha-engine
 COPY run.sh /usr/local/bin/intiha-run
 COPY LICENSE /usr/share/licenses/intiha/LICENSE
-COPY licenses /usr/share/licenses/intiha/dependencies/
+COPY --from=builder /build/dependency-licenses/ /usr/share/licenses/intiha/dependencies/
 RUN chmod 0755 /usr/local/bin/intiha-engine /usr/local/bin/intiha-run
 
 ENV INTIHA_BIND=0.0.0.0 \
