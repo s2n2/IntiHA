@@ -1,6 +1,5 @@
 # Standalone alternative for Home Assistant Container installations.
-# Create .env with distinct, random INTIHA_CLIENT_TOKEN and INTIHA_BRIDGE_TOKEN
-# values of at least 32 characters. Do not commit .env.
+# Start with: docker compose up --build -d
 services:
   intiha-engine:
     build:
@@ -11,8 +10,6 @@ services:
       - "12345:12345"
       - "12346:12346"
     environment:
-      INTIHA_CLIENT_TOKEN: "${INTIHA_CLIENT_TOKEN:?Set INTIHA_CLIENT_TOKEN in .env}"
-      INTIHA_BRIDGE_TOKEN: "${INTIHA_BRIDGE_TOKEN:?Set INTIHA_BRIDGE_TOKEN in .env}"
       INTIHA_LOG_LEVEL: info
     security_opt:
       - no-new-privileges:true

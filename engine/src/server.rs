@@ -1,12 +1,12 @@
-//! Authenticated WebSocket front doors and safety/lifecycle supervision.
+//! Tokenless LAN WebSocket front doors and lifecycle supervision.
 use crate::{VERSION, bridge::Bridge, hardware::HaManagerBuilder};
 use axum::{
     Json, Router,
     extract::{
-        Query, State, WebSocketUpgrade,
+        State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -23,20 +23,16 @@ use buttplug_server_device_config::load_protocol_configs;
 use futures::{Sink, SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
-use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
 #[derive(Clone)]
 pub struct Config {
-    pub bridge_token: String,
-    pub client_token: String,
     pub bind: String,
     pub client_port: u16,
     pub bridge_port: u16,
@@ -44,8 +40,6 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let config = Self {
-            bridge_token: std::env::var("INTIHA_BRIDGE_TOKEN").unwrap_or_default(),
-            client_token: std::env::var("INTIHA_CLIENT_TOKEN").unwrap_or_default(),
             bind: std::env::var("INTIHA_BIND").unwrap_or_else(|_| "0.0.0.0".into()),
             client_port: std::env::var("INTIHA_CLIENT_PORT")
                 .unwrap_or_else(|_| "12345".into())
@@ -58,23 +52,6 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.bridge_token.len() >= 32 && self.client_token.len() >= 32,
-            "Both IntiHA tokens must have at least 32 characters"
-        );
-        anyhow::ensure!(
-            self.bridge_token != self.client_token,
-            "Bridge and client tokens must be different"
-        );
-        anyhow::ensure!(
-            self.bridge_token.len() <= 256 && self.client_token.len() <= 256,
-            "Tokens must be no longer than 256 characters"
-        );
-        anyhow::ensure!(
-            self.bridge_token.bytes().all(|b| b.is_ascii_graphic())
-                && self.client_token.bytes().all(|b| b.is_ascii_graphic()),
-            "Tokens must contain printable ASCII characters without spaces"
-        );
         anyhow::ensure!(
             self.client_port != self.bridge_port || self.client_port == 0,
             "Listeners need different ports"
@@ -244,7 +221,7 @@ impl App {
                     let _ = self.bridge.scan(false).await;
                     stopped?;
                 }
-                self.bridge.disconnect_unselected().await;
+                self.bridge.disconnect_if_disabled().await;
                 let status = self.bridge.status();
                 let _ = self.bridge.send(status.clone()).await;
                 Ok(status)
@@ -459,9 +436,7 @@ impl App {
                     && writes.len() <= 16
                 {
                     let plan = self.bridge.rpc(json!({"op":"set_stop_plan","address":address,"connection_id":session.id,"writes":writes}), Duration::from_secs(12)).await;
-                    if plan.is_ok() && session.connected.load(Ordering::SeqCst) {
-                        session.ready.store(true, Ordering::SeqCst);
-                    } else {
+                    if plan.is_err() || !self.bridge.mark_ready(&session) {
                         let _ = self.bridge.disconnect_session(&session).await;
                     }
                 } else {
@@ -574,7 +549,7 @@ impl App {
         self.bridge.control_epoch.fetch_add(1, Ordering::SeqCst);
         let _guard = self.admin_lock.lock().await;
         let _ = self.stop_all().await;
-        self.bridge.disconnect_unselected().await;
+        self.bridge.disconnect_if_disabled().await;
         let _ = tokio::time::timeout(Duration::from_secs(15), self.admin_server.shutdown()).await;
     }
 }
@@ -605,30 +580,9 @@ fn is_movement(name: &str) -> bool {
 async fn health() -> Json<Value> {
     Json(json!({"status":"ok","version":VERSION}))
 }
-fn token_matches(actual: &str, expected: &str) -> bool {
-    if actual.len() != expected.len() {
-        return false;
-    }
-    bool::from(actual.as_bytes().ct_eq(expected.as_bytes()))
-}
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("authorization")?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-}
-
-async fn bridge_upgrade(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    ws: WebSocketUpgrade,
-) -> Response {
+async fn bridge_upgrade(State(app): State<Arc<App>>, ws: WebSocketUpgrade) -> Response {
     if app.stopping.load(Ordering::SeqCst) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    if !bearer(&headers).is_some_and(|token| token_matches(token, &app.config.bridge_token)) {
-        return StatusCode::UNAUTHORIZED.into_response();
     }
     let Ok(permit) = app.bridge_slot.clone().try_acquire_owned() else {
         return StatusCode::CONFLICT.into_response();
@@ -641,20 +595,9 @@ async fn bridge_upgrade(
         })
         .into_response()
 }
-async fn client_upgrade(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
-    ws: WebSocketUpgrade,
-) -> Response {
+async fn client_upgrade(State(app): State<Arc<App>>, ws: WebSocketUpgrade) -> Response {
     if app.stopping.load(Ordering::SeqCst) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    let token = bearer(&headers)
-        .or_else(|| query.get("token").map(String::as_str))
-        .unwrap_or("");
-    if !token_matches(token, &app.config.client_token) {
-        return StatusCode::UNAUTHORIZED.into_response();
     }
     let Ok(permit) = app.client_slot.clone().try_acquire_owned() else {
         return StatusCode::CONFLICT.into_response();
@@ -908,23 +851,18 @@ fn error_message(id: u32, error: &str) -> Message {
 mod tests {
     use super::*;
     #[test]
-    fn token_separation_and_comparison() {
-        assert!(token_matches("secret", "secret"));
-        assert!(!token_matches("Secret", "secret"));
-        let config = Config {
-            bridge_token: "a".repeat(32),
-            client_token: "a".repeat(32),
-            bind: "127.0.0.1".into(),
-            client_port: 1,
-            bridge_port: 2,
-        };
+    fn listeners_must_use_different_ports() {
+        let mut config = test_config();
+        assert!(config.validate().is_ok());
+        config.client_port = 12345;
+        config.bridge_port = 12345;
         assert!(config.validate().is_err());
+        config.bridge_port = 12346;
+        assert!(config.validate().is_ok());
     }
     #[tokio::test]
     async fn starts_disabled_and_uses_official_v3_handshake() {
         let app = App::new(Config {
-            bridge_token: "a".repeat(32),
-            client_token: "b".repeat(32),
             bind: "127.0.0.1".into(),
             client_port: 0,
             bridge_port: 0,
@@ -945,8 +883,6 @@ mod tests {
 
     fn test_config() -> Config {
         Config {
-            bridge_token: "a".repeat(32),
-            client_token: "b".repeat(32),
             bind: "127.0.0.1".into(),
             client_port: 0,
             bridge_port: 0,

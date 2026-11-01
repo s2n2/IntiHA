@@ -95,8 +95,8 @@ impl HardwareConnector for HaConnector {
     }
     async fn connect(&mut self) -> DeviceResult<Box<dyn HardwareSpecializer>> {
         let address = &self.advertisement.address;
-        if !self.bridge.enabled.load(Ordering::SeqCst) || !self.bridge.selected(address) {
-            return Err(device_error("Device is disabled or not selected"));
+        if !self.bridge.enabled.load(Ordering::SeqCst) || !self.bridge.supported(address) {
+            return Err(device_error("Device is disabled or unsupported"));
         }
         if self.bridge.session_for(address).is_some() {
             return Err(device_error("Device already has a BLE connection"));
@@ -124,7 +124,7 @@ impl HardwareConnector for HaConnector {
                 return Err(error);
             }
         };
-        if !self.bridge.enabled.load(Ordering::SeqCst) || !self.bridge.selected(address) {
+        if !self.bridge.enabled.load(Ordering::SeqCst) || !self.bridge.supported(address) {
             let _ = self
                 .bridge
                 .rpc(

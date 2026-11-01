@@ -1,19 +1,18 @@
 # IntiHA bridge protocol 1
 
-The integration connects out to `ws://APP_HOST:12346/bridge` with HTTP
-`Authorization: Bearer <bridge_token>`. Exactly one bridge is accepted. Tokens
-are independent of the client token and must be at least 32 characters.
-Use an isolated trusted LAN or a TLS reverse proxy for traffic outside the host.
+The integration connects out to `ws://APP_HOST:12346/bridge`. No token or
+authentication header is required. Exactly one bridge is accepted. Both
+listeners accept connections from the local network.
 Each text frame is one JSON object; binary frames are rejected. Maximum frame
 size is 64 KiB. Byte data is always a JSON array of integers 0–255.
 
 HA first sends:
 
 ```json
-{"type":"hello","protocol":1,"enabled":false,"auto_reconnect":true,"selected_addresses":["AA:BB:CC:DD:EE:FF"],"manual_timeout_seconds":60}
+{"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60}
 ```
 
-The engine replies `{"type":"hello","protocol":1,"version":"0.1.0"}`.
+The engine replies `{"type":"hello","protocol":1,"version":"0.2.0"}`.
 The socket establishes a new generation; previous pending RPCs and BLE sessions
 must never survive it. `connection_id` is a new UUID for each physical connect.
 The address is uppercase. No command is replayed after reconnection.
@@ -27,9 +26,13 @@ The address is uppercase. No command is replayed after reconnection.
 ```
 
 Advertisements may include `service_data` and `connectable`. Send all
-advertisements during search, and continue sending selected-device
-advertisements while enabled. Only explicit selected addresses can connect.
-Unsupported advertisements are ignored by the official protocol matcher.
+advertisements continuously while enabled. Every device recognized by the
+official protocol matcher is automatically eligible to connect; there is no
+address approval list. Unsupported advertisements are ignored. The engine
+queues a `discovered` event before issuing that address's first connect request,
+so HA can create the device and admit the connection in the same session.
+Search refreshes cached advertisements and retries previously attempted
+devices; it is not required for first discovery.
 
 ## Engine to HA hardware requests
 
@@ -69,7 +72,7 @@ original connection_id. HA must reject an unknown/stale connection_id.
 ## HA administration
 
 ```json
-{"type":"admin","id":10,"op":"configure","enabled":true,"auto_reconnect":true,"selected_addresses":["AA:BB:CC:DD:EE:FF"],"manual_timeout_seconds":60}
+{"type":"admin","id":10,"op":"configure","enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60}
 {"type":"admin","id":11,"op":"scan","seconds":30}
 {"type":"admin","id":12,"op":"stop"}
 {"type":"admin","id":13,"op":"status"}
@@ -117,8 +120,8 @@ confirmed for devices that provide no output feedback or write acknowledgement.
 
 ## External Buttplug connections
 
-`ws://APP_HOST:12345/?token=<client_token>` or an HTTP Bearer token. Exactly
-one external controller. Standard upstream versions 0–4 are negotiated by
+`ws://APP_HOST:12345/` or `ws://APP_HOST:12345/buttplug`; no token or
+custom header is required. Exactly one external controller. Standard upstream versions 0–4 are negotiated by
 the official serializer. HA manual motion is blocked while it owns control.
 The server advertises a 20-second protocol ping deadline. Socket loss, timeout,
 off, and controller change stop devices and clear manual state. There is no
@@ -132,8 +135,10 @@ An explicit device stop can therefore also end the external control session.
 
 ## Engine environment
 
-`INTIHA_BRIDGE_TOKEN`, `INTIHA_CLIENT_TOKEN` (required); `INTIHA_BIND`
-(default `0.0.0.0`), `INTIHA_CLIENT_PORT` (`12345`), `INTIHA_BRIDGE_PORT`
-(`12346`), `RUST_LOG` (default `warn,intiha_engine=info`). Tokens and complete
-client URLs must not be logged. The bridge and client listeners bind different
-ports. A new process always starts disabled until the authenticated HA hello.
+`INTIHA_BIND` (default `0.0.0.0`), `INTIHA_CLIENT_PORT` (`12345`),
+`INTIHA_BRIDGE_PORT` (`12346`), and `RUST_LOG` (default
+`warn,intiha_engine=info`). No user-supplied secrets are required. The bridge
+and client listeners bind different ports. A new process waits disabled until
+HA sends its current enabled setting in the hello. A newly installed
+integration enables discovery by default; an explicitly switched-off
+integration retains its off state.

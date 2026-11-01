@@ -54,6 +54,7 @@ struct Candidate {
     next_attempt: Instant,
     attempts: u32,
     attempted: bool,
+    announced: bool,
     protocols: Vec<String>,
 }
 
@@ -118,7 +119,6 @@ pub struct Bridge {
     pub control_epoch: AtomicU64,
     pub scanning: AtomicBool,
     pub reconnect_paused: AtomicBool,
-    selected: RwLock<HashSet<String>>,
     candidates: Mutex<HashMap<String, Candidate>>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     comm_sender: Mutex<Option<mpsc::Sender<HardwareCommunicationManagerEvent>>>,
@@ -142,7 +142,6 @@ impl Bridge {
             control_epoch: AtomicU64::new(0),
             scanning: AtomicBool::new(false),
             reconnect_paused: AtomicBool::new(false),
-            selected: RwLock::new(HashSet::new()),
             candidates: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             comm_sender: Mutex::new(None),
@@ -273,25 +272,6 @@ impl Bridge {
     }
 
     pub fn configure(&self, value: &Value) -> Result<(), String> {
-        if let Some(value) = value.get("selected_addresses") {
-            let array = value
-                .as_array()
-                .ok_or("selected_addresses must be an array")?;
-            if array.len() > 32 {
-                return Err("At most 32 devices may be selected".into());
-            }
-            let mut selected = HashSet::new();
-            for address in array {
-                let address = address
-                    .as_str()
-                    .ok_or("A device address must be a string")?;
-                if !valid_address(address) {
-                    return Err("Invalid Bluetooth address".into());
-                }
-                selected.insert(address.to_uppercase());
-            }
-            *self.selected.write().unwrap() = selected;
-        }
         if let Some(value) = value.get("auto_reconnect") {
             self.auto_reconnect.store(
                 value.as_bool().ok_or("auto_reconnect must be boolean")?,
@@ -319,8 +299,12 @@ impl Bridge {
         Ok(())
     }
 
-    pub fn selected(&self, address: &str) -> bool {
-        self.selected.read().unwrap().contains(address)
+    pub fn supported(&self, address: &str) -> bool {
+        self.candidates
+            .lock()
+            .unwrap()
+            .get(address)
+            .is_some_and(|candidate| candidate.announced)
     }
 
     pub async fn advertisement(&self, value: Value) {
@@ -355,7 +339,6 @@ impl Bridge {
             if candidates.len() >= 256 && !candidates.contains_key(&advertisement.address) {
                 return;
             }
-            let notify = !candidates.contains_key(&advertisement.address);
             let candidate = candidates
                 .entry(advertisement.address.clone())
                 .or_insert_with(|| Candidate {
@@ -364,15 +347,28 @@ impl Bridge {
                     next_attempt: Instant::now(),
                     attempts: 0,
                     attempted: false,
+                    announced: false,
                     protocols: protocols.clone(),
                 });
             candidate.advertisement = advertisement.clone();
             candidate.seen = Instant::now();
-            notify
+            candidate.protocols = protocols.clone();
+            !candidate.announced
         };
         if notify || self.scanning.load(Ordering::SeqCst) {
-            let _ = self.send(json!({"type":"discovered", "address":advertisement.address,
+            let sent = self.send(json!({"type":"discovered", "address":advertisement.address,
                 "name":advertisement.name,"protocols":protocols,"rssi":advertisement.rssi,"source":advertisement.source})).await;
+            if sent.is_ok()
+                && let Some(candidate) = self
+                    .candidates
+                    .lock()
+                    .unwrap()
+                    .get_mut(&advertisement.address)
+            {
+                // Admission at HA follows this event. Do not issue connect
+                // before it is queued, including when discovery races a tick.
+                candidate.announced = true;
+            }
         }
     }
 
@@ -397,17 +393,20 @@ impl Bridge {
             .values()
             .map(|s| s.address.clone())
             .collect();
-        let selected = self.selected.read().unwrap().clone();
         let now = Instant::now();
         let due: Vec<_> = {
             let mut candidates = self.candidates.lock().unwrap();
             candidates.retain(|address, candidate| {
-                selected.contains(address) || now.duration_since(candidate.seen).as_secs() < 180
+                // Keep attempted addresses so auto_reconnect=false continues
+                // to mean no automatic retry after a long absence.
+                candidate.attempted
+                    || connected.contains(address)
+                    || now.duration_since(candidate.seen).as_secs() < 180
             });
             candidates
                 .values_mut()
                 .filter_map(|candidate| {
-                    if !selected.contains(&candidate.advertisement.address)
+                    if !candidate.announced
                         || connected.contains(&candidate.advertisement.address)
                         || now.duration_since(candidate.seen) > Duration::from_secs(120)
                         || candidate.next_attempt > now
@@ -448,6 +447,25 @@ impl Bridge {
             candidate.next_attempt = Instant::now()
                 + Duration::from_millis((1u64 << candidate.attempts).min(60) * 1000 + jitter);
         }
+    }
+
+    pub fn mark_ready(&self, session: &Arc<Session>) -> bool {
+        // Only a fully initialised current connection resets failure backoff.
+        // Keeping the session map locked prevents a concurrent disconnect from
+        // being followed by a late ready flag for the retired generation.
+        let sessions = self.sessions.lock().unwrap();
+        if !sessions
+            .get(&session.id)
+            .is_some_and(|current| Arc::ptr_eq(current, session))
+            || !session.connected.load(Ordering::SeqCst)
+        {
+            return false;
+        }
+        session.ready.store(true, Ordering::SeqCst);
+        if let Some(candidate) = self.candidates.lock().unwrap().get_mut(&session.address) {
+            candidate.attempts = 0;
+        }
+        true
     }
 
     pub fn register(&self, session: Arc<Session>) {
@@ -503,14 +521,14 @@ impl Bridge {
         result.map(|_| ())
     }
 
-    pub async fn disconnect_unselected(&self) {
+    pub async fn disconnect_if_disabled(&self) {
+        if self.enabled.load(Ordering::SeqCst) {
+            return;
+        }
         let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         futures::future::join_all(
             sessions
                 .iter()
-                .filter(|session| {
-                    !self.enabled.load(Ordering::SeqCst) || !self.selected(&session.address)
-                })
                 .map(|session| self.disconnect_session(session)),
         )
         .await;
@@ -664,5 +682,145 @@ mod tests {
         )));
         bridge.invalidate("preparing");
         assert_eq!(bridge.control_epoch.load(Ordering::SeqCst), before + 1);
+    }
+
+    fn discovery_bridge() -> Arc<Bridge> {
+        Bridge::new(Arc::new(
+            buttplug_server_device_config::load_protocol_configs(&None, &None, false)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+    }
+
+    fn known_advertisement() -> Value {
+        json!({"address":"AA:BB:CC:DD:EE:01","name":"Rave","service_uuids":[],"manufacturer_data":{}})
+    }
+
+    #[tokio::test]
+    async fn continuous_discovery_ignores_unsupported_devices_and_respects_off() {
+        let bridge = discovery_bridge();
+        let (tx, mut rx) = mpsc::channel(4);
+        bridge.attach(tx);
+        let (manager, mut found) = mpsc::channel(4);
+        bridge.install_manager(manager);
+        bridge.advertisement(json!({"address":"AA:BB:CC:DD:EE:02","name":"ordinary temperature sensor","service_uuids":[],"manufacturer_data":{}})).await;
+        assert!(rx.try_recv().is_err());
+        assert!(bridge.candidates.lock().unwrap().is_empty());
+
+        bridge.advertisement(known_advertisement()).await;
+        assert_eq!(rx.recv().await.unwrap()["type"], "discovered");
+        bridge.discover_due().await;
+        assert!(
+            found.try_recv().is_err(),
+            "Master off must block connections"
+        );
+        bridge.configure(&json!({"enabled":true})).unwrap();
+        bridge.discover_due().await;
+        assert!(
+            matches!(found.try_recv().unwrap(), HardwareCommunicationManagerEvent::DeviceFound { address, .. } if address == "AA:BB:CC:DD:EE:01")
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_waits_until_discovery_is_queued_for_home_assistant() {
+        let bridge = discovery_bridge();
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send(json!({"type":"queue_filler"})).await.unwrap();
+        bridge.attach(tx);
+        bridge.configure(&json!({"enabled":true})).unwrap();
+        let (manager, mut found) = mpsc::channel(4);
+        bridge.install_manager(manager);
+        let b = bridge.clone();
+        let announcement = tokio::spawn(async move {
+            b.advertisement(known_advertisement()).await;
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !bridge.candidates.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        bridge.discover_due().await;
+        assert!(found.try_recv().is_err());
+        assert!(!bridge.supported("AA:BB:CC:DD:EE:01"));
+        assert_eq!(rx.recv().await.unwrap()["type"], "queue_filler");
+        announcement.await.unwrap();
+        assert_eq!(rx.recv().await.unwrap()["type"], "discovered");
+        bridge.discover_due().await;
+        assert!(found.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn auto_reconnect_off_waits_for_explicit_search_even_after_long_absence() {
+        let bridge = discovery_bridge();
+        let (tx, mut rx) = mpsc::channel(4);
+        let epoch = bridge.attach(tx);
+        let (manager, mut found) = mpsc::channel(4);
+        bridge.install_manager(manager);
+        bridge
+            .configure(&json!({"enabled":true,"auto_reconnect":false}))
+            .unwrap();
+        bridge.advertisement(known_advertisement()).await;
+        rx.recv().await.unwrap();
+        bridge.discover_due().await;
+        assert!(found.try_recv().is_ok());
+        {
+            let mut candidates = bridge.candidates.lock().unwrap();
+            let candidate = candidates.get_mut("AA:BB:CC:DD:EE:01").unwrap();
+            candidate.next_attempt = Instant::now();
+            candidate.seen = Instant::now() - Duration::from_secs(300);
+        }
+        bridge.discover_due().await;
+        assert_eq!(bridge.candidates.lock().unwrap().len(), 1);
+        bridge.advertisement(known_advertisement()).await;
+        bridge.discover_due().await;
+        assert!(found.try_recv().is_err());
+
+        let b = bridge.clone();
+        let search = tokio::spawn(async move { b.scan(true).await });
+        let request = rx.recv().await.unwrap();
+        assert_eq!(request["op"], "scan");
+        bridge.response(epoch, &json!({"id":request["id"],"ok":true,"result":{}}));
+        search.await.unwrap().unwrap();
+        bridge.discover_due().await;
+        assert!(found.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_ready_connection_resets_backoff_for_the_next_roam() {
+        let bridge = discovery_bridge();
+        let (tx, _rx) = mpsc::channel(4);
+        bridge.attach(tx);
+        bridge.advertisement(known_advertisement()).await;
+        let address = "AA:BB:CC:DD:EE:01";
+        for _ in 0..6 {
+            bridge.failed_attempt(address);
+        }
+        assert_eq!(bridge.candidates.lock().unwrap()[address].attempts, 6);
+        let session = Arc::new(Session::new(address, "ready-session", false));
+        bridge.register(session.clone());
+        assert!(bridge.mark_ready(&session));
+        assert_eq!(bridge.candidates.lock().unwrap()[address].attempts, 0);
+        assert!(session.ready.load(Ordering::SeqCst));
+
+        bridge.invalidate(&session.id);
+        {
+            let candidates = bridge.candidates.lock().unwrap();
+            let candidate = &candidates[address];
+            assert_eq!(candidate.attempts, 1);
+            assert!(candidate.next_attempt > Instant::now());
+            assert!(candidate.next_attempt < Instant::now() + Duration::from_secs(3));
+        }
+        assert!(
+            !bridge.mark_ready(&session),
+            "Retired sessions cannot become ready again"
+        );
+        assert!(!session.ready.load(Ordering::SeqCst));
+        assert_eq!(bridge.candidates.lock().unwrap()[address].attempts, 1);
     }
 }

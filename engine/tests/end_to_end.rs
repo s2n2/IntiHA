@@ -13,10 +13,7 @@ use tokio::{
     sync::{broadcast, mpsc},
     task::JoinHandle,
 };
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message, client::IntoClientRequest},
-};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const ADDRESS: &str = "AA:BB:CC:DD:EE:01";
 const TX: &str = "f000c000-0451-4000-b000-000000000000";
@@ -33,8 +30,6 @@ struct Harness {
 impl Harness {
     async fn start() -> Self {
         let config = Config {
-            bridge_token: "bridge_".to_owned() + &"a".repeat(32),
-            client_token: "client_".to_owned() + &"b".repeat(32),
             bind: "127.0.0.1".into(),
             client_port: 0,
             bridge_port: 0,
@@ -42,11 +37,7 @@ impl Harness {
         let app = App::new(config.clone()).await.unwrap();
         let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bridge_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let client_url = format!(
-            "ws://{}/?token={}",
-            client_listener.local_addr().unwrap(),
-            config.client_token
-        );
+        let client_url = format!("ws://{}/", client_listener.local_addr().unwrap());
         let bridge_url = format!("ws://{}/bridge", bridge_listener.local_addr().unwrap());
         let a = app.clone();
         let b = app.clone();
@@ -66,13 +57,15 @@ impl Harness {
                 c.supervise().await;
             }),
         ];
-        let mut request = bridge_url.into_client_request().unwrap();
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {}", config.bridge_token).parse().unwrap(),
-        );
-        let (mut socket, _) = connect_async(request).await.unwrap();
-        socket.send(Message::Text(json!({"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true,"selected_addresses":[ADDRESS]}).to_string().into())).await.unwrap();
+        let (mut socket, _) = connect_async(bridge_url).await.unwrap();
+        socket
+            .send(Message::Text(
+                json!({"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
         let (commands, mut command_rx) = mpsc::channel::<Value>(32);
         let (events, _) = broadcast::channel::<Value>(128);
         let event_sender = events.clone();
@@ -220,11 +213,9 @@ async fn real_engine_uses_gatt_stop_plan_and_never_pulses_on_connect() {
 }
 
 #[tokio::test]
-async fn official_v3_and_v4_clients_authenticate_and_have_exclusive_control() {
+async fn official_v3_and_v4_clients_connect_without_tokens_and_have_exclusive_control() {
     let h = Harness::start().await;
     let device = h.ready().await;
-    let no_token = h.client_url.split('?').next().unwrap();
-    assert!(connect_async(no_token).await.is_err());
     for version in [3, 4] {
         let (mut socket, _) = connect_async(&h.client_url).await.unwrap();
         let handshake = if version == 3 {
@@ -309,8 +300,9 @@ async fn reconnect_uses_new_session_and_keeps_output_stopped() {
 }
 
 #[tokio::test]
-async fn unselected_devices_are_discovered_without_connecting() {
+async fn compatible_devices_connect_automatically_without_selection_or_search() {
     let h = Harness::start().await;
+    let first = h.ready().await;
     let mut events = h.events.subscribe();
     let other = "AA:BB:CC:DD:EE:02";
     h.send(json!({"type":"advertisement","address":other,"name":"Rave","service_uuids":[],"manufacturer_data":{}})).await;
@@ -318,8 +310,30 @@ async fn unselected_devices_are_discovered_without_connecting() {
         v["type"] == "discovered" && v["address"] == other
     })
     .await;
-    h.app.bridge.discover_due().await;
-    assert!(h.app.bridge.session_for(other).is_none());
-    assert!(h.writes.lock().unwrap().is_empty());
+    let inventory = Harness::wait(&mut events, |v| {
+        v["type"] == "devices"
+            && v["devices"].as_array().is_some_and(|devices| {
+                devices
+                    .iter()
+                    .any(|d| d["address"] == other && d["ready"] == true)
+            })
+    })
+    .await;
+    assert_eq!(inventory["devices"].as_array().unwrap().len(), 2);
+    let second = inventory["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|device| device["address"] == other)
+        .unwrap();
+    assert_ne!(first["connection_id"], second["connection_id"]);
+    assert!(h.app.bridge.session_for(other).is_some());
+    assert!(
+        h.writes
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|write| write["data"] == json!([15, 0, 0, 0, 0, 0, 0, 0]))
+    );
     h.finish().await;
 }

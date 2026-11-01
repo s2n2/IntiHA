@@ -1,5 +1,5 @@
 name: IntiHA Engine
-version: "0.1.0"
+version: "0.2.0"
 slug: intiha_engine
 description: Buttplug server using the IntiHA integration and Home Assistant Bluetooth proxies
 url: https://github.com/s2n2/IntiHA
@@ -10,18 +10,16 @@ startup: services
 boot: auto
 init: true
 homeassistant: "2026.10.0"
+discovery:
+  - intiha
 ports:
   12345/tcp: 12345
   12346/tcp: 12346
 ports_description:
-  12345/tcp: Buttplug clients (client token required)
-  12346/tcp: IntiHA Home Assistant bridge (bridge token required)
+  12345/tcp: Buttplug clients
+  12346/tcp: IntiHA Home Assistant bridge
 watchdog: http://[HOST]:[PORT:12345]/health
 options:
-  client_token: ""
-  bridge_token: ""
   log_level: info
 schema:
-  client_token: password
-  bridge_token: password
   log_level: list(error|warn|info|debug)
