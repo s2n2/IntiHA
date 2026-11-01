@@ -1,21 +1,53 @@
-IntiHA v0.2.3 - Bond safe-stop hotfix
+IntiHA 0.2.4 - GitHub patch for the supplied 0.2.3 source
 
-Apply the contents of this ZIP at the ROOT of your GitHub repository
-https://github.com/s2n2/IntiHA (overwrite matching files).
+Update BOTH the HACS integration and Engine app. No ESPHome reflash required.
 
-Or use the separate IntiHA-v0.2.3.patch from your repository root:
+This ZIP contains only changed/new files with repository-relative paths.
+Extract locally, then copy its contents over the matching repository paths.
+Do not upload the ZIP as a single file expecting Home Assistant to use it.
+Do not delete unchanged repository files. Do not copy this instruction file
+into custom_components/intiha or the engine build directory.
 
-  git apply IntiHA-v0.2.3.patch
+Alternatively, use the separately supplied IntiHA-v0.2.4.patch:
+  git apply --check IntiHA-v0.2.4.patch
+  git apply IntiHA-v0.2.4.patch
   git add -A
-  git commit -m "Fix We-Vibe stopped-state initialization"
+  git commit -m "Revise IntiHA connection and atomic stop preparation"
   git push
 
-The v0.2.3 release number must be visible in the HA app store before
-installing the updated engine. Refresh the app store repository, then
-rebuild/reinstall IntiHA Engine as appropriate. Restart the engine app.
-The HACS integration metadata is also updated to v0.2.3.
+Run the existing GitHub Actions validation before publishing a v0.2.4 release.
+Formatting checks and the full Rust/HA/Docker suite are not locally verified.
+The release workflow creates a draft; publish it after checking validation.
+README.md contains the HACS-visible version history and CHANGELOG.md supplies
+release notes.
 
-The fix is restricted to recognized classic We-Vibe protocol devices with
-the known control characteristic. It does NOT bypass safety checks for
-unknown devices or prove real-Bond compatibility. See Last error if it
-still refuses control. Rust builds and real BLE testing are outstanding.
+HOME ASSISTANT UPDATE ORDER
+1. Stop the IntiHA Engine app.
+2. Update/redownload IntiHA in HACS to 0.2.4; restart Home Assistant.
+3. Refresh App Store repositories, update/rebuild IntiHA Engine to 0.2.4,
+   then start the app. Confirm its startup log reports version 0.2.4.
+4. Leave IntiHA enabled. A device progresses through connecting, initialising,
+   verifying_stop and connected. No tokens, approval lists or C3 changes.
+
+WHAT WAS VALIDATED
+45 Python transport tests passed with real production transport modules and
+fake HA imports / fake Bluetooth radio. This is NOT a live HA, compiled Rust
+engine or physical Bond test. Run:
+  python tools/run_offline_transport_tests.py
+Requires pytest, pytest-asyncio, aiohttp.
+
+Patch application to the supplied 0.2.3 baseline, changed Python compilation,
+release-version consistency, and JSON/YAML/TOML parsing passed. New Rust tests
+exercise the official Bond profile, failed stop gating, packet capture,
+connection-attempt deduplication and descriptive timeout failures. They are
+included for CI but have NOT been executed locally. Rust, Docker and full HA
+were unavailable. See docs/VALIDATION.md.
+
+SAFETY
+Driver-packet capture is not proof that a stop reached the device. Controls
+remain blocked until HA has cached and completed the real stop writes on the
+same connection and acknowledged the matching connection ID/write count.
+Failure, timeout or cancellation keeps controls disabled and closes the link.
+The real GATT deadline remains 10 seconds; the outer RPC deadline now also
+allows bounded cleanup and error reporting. Lost-link movement is not replayed.
+A transport acknowledgement is not measured motor feedback.

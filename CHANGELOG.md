@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.2.4
+
+Connection and stop-preparation revision. Update the HACS integration and
+Engine app together; restart Home Assistant after the HACS update.
+
+- Separate stop-packet generation from Bluetooth delivery. While a newly
+  identified device is not ready, capture the official driver's stop writes
+  without starting GATT operations from that driver's queue. This also uses
+  the real driver for non-classic profiles rather than applying the classic
+  We-Vibe packet to every We-Vibe model.
+- Add one atomic `prepare_stop` operation: validate and cache the packet plan,
+  execute the real GATT writes, then acknowledge the matching connection ID
+  and write count. Only that acknowledgement permits control. A timeout,
+  cancellation, disconnect or incomplete acknowledgement keeps control blocked.
+- Keep the classic We-Vibe fixed stop behind its existing protocol/endpoint
+  checks, but run it through the same atomic transport verification.
+- Serialise GATT requests per connection and prevent overlapping engine
+  connection attempts. Use one backend connect attempt per engine retry.
+- Allow the engine RPC deadline to include HA's bounded failure cleanup;
+  keep GATT I/O deadlines unchanged. Do not count teardown as pending GATT I/O.
+- Ignore disconnect callbacks from retired client objects, even when a
+  connection attempt shares its logical ID with a later client object.
+- Show connection stages and retain useful errors. Distinguish link loss,
+  stop-packet generation, stop-write failure and bridge-session loss. Replace
+  empty exception messages with operation-specific descriptions.
+- Add transport regression tests and official-engine Bond test cases. Local
+  validation: 45 isolated Python tests passed using fake radio/HA imports.
+  The Rust tests, complete HA suite and Docker build were not run locally;
+  publication remains gated by the existing GitHub Actions validation.
+- Preserve tokenless setup, automatic discovery, cached emergency stops,
+  generation fences and the rule against replaying movement after reconnect.
+
 ## 0.2.3
 
 Device safe-stop compatibility and diagnostic hotfix.

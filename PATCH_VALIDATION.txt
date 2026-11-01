@@ -1,0 +1,15 @@
+IntiHA 0.2.4 patch validation - 1 November 2026
+
+PASS: 45 isolated Python transport tests (production ble.py / bridge.py).
+PASS: Patch applies to supplied baseline-v0.2.3.
+PASS: Applied changed files match the prepared files byte-for-byte.
+PASS: Changed Python modules compile with Python 3.13.5.
+PASS: JSON/YAML/TOML/Cargo.lock parse and release metadata agrees.
+PASS: Dockerfile retains dependency-licence collection from builder.
+PASS: git diff --check.
+
+NOT RUN: Rust compile, rustfmt, clippy, Rust tests including official Bond cases.
+NOT RUN: full Home Assistant test suite, hassfest and remote HACS validators.
+NOT RUN: Docker builds or physical Bond/ESPHome tests.
+
+No GitHub push or Home Assistant deployment was performed.

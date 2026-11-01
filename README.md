@@ -13,9 +13,11 @@ connects them to Home Assistant's Bluetooth network and provides the HA
 controls and sensors. Home Assistant Container users can run the same engine
 with Docker Compose.
 
-**Version 0.2.3 — ready for physical hardware evaluation.** Automated tests
-use real Home Assistant and the official Buttplug engine with a simulated
-radio. Actual devices and room-to-room radio coverage still require testing.
+**Version 0.2.4 - connection and stop-initialisation revision.** Update both
+components together. This patch passed 45 isolated Python transport tests
+with fake radio/HA imports. Its new Rust/Bond regression tests, full HA suite
+and Docker image still need to pass in GitHub Actions. Physical device and
+room-to-room coverage testing remains necessary.
 This is an independent project, not an official Intiface or Home Assistant
 product.
 
@@ -27,11 +29,20 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
+| **0.2.4** | Separate driver stop-packet generation from real GATT verification; atomic write-and-cache acknowledgement; serialised connection attempts; useful connection-stage diagnostics. Update both HACS and the Engine app. |
 | **0.2.3** | Restore control for verified classic We-Vibe devices when the upstream stopped-state command produces no Bluetooth writes; retain stop-on-disconnect and add detailed diagnostics. |
 | **0.2.2** | Fix Docker installation without relying on a separately published `engine/licenses/` folder; collect upstream dependency licences during the Rust build. |
 | **0.2.1** | Fix IntiHA Engine app installation by including the full dependency-licence directory in the GitHub repository; add release-history visibility and build checks. No configuration changes. |
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
+
+## Updating from 0.2.3
+
+Stop the Engine app first. Update the HACS integration to **0.2.4** and restart
+Home Assistant, then update/rebuild and start **IntiHA Engine 0.2.4**. A new
+`prepare_stop` bridge operation requires both components; updating the app
+alone is insufficient. No ESPHome, Wi-Fi, token or device-selection changes
+are required. The update does not remove existing device entities.
 
 ## Quick setup on Home Assistant OS
 
@@ -114,7 +125,7 @@ changes. Entity IDs depend on HA naming and any changes you make.
 | Client connected / control owner | Whether an external Buttplug application owns movement control. |
 | Connected devices | Devices identified and ready for control, with stop plans installed. |
 | Active Bluetooth adapters | Connectable HA scanners, including active proxies and local adapters. This is not a free-slot count. |
-| Device connected / device status | Whether the device is currently ready to control. |
+| Device connected / device status | Whether controls are ready, plus connecting, initialising, verifying stop, retrying or offline stages. The status attributes retain the last error. |
 | Battery | Actual reading where the upstream profile supports it; otherwise unknown. |
 | Signal strength / last seen / last seen via | Latest advertisement information. The advertisement source is not necessarily the active control path. |
 | Stop unconfirmed / last error | A failure or uncertain stop remains visible instead of being reported as success. |

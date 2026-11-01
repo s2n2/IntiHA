@@ -73,6 +73,8 @@ pub struct Session {
     pub ready: AtomicBool,
     pub first_write: AtomicBool,
     pub inflight: AtomicU64,
+    pub io_lock: tokio::sync::Mutex<()>,
+    pub last_io_error: Mutex<Option<String>>,
     pub classic_wevibe: bool,
     pub endpoints: RwLock<HashMap<Endpoint, String>>,
     pub write_modes: RwLock<HashMap<String, bool>>,
@@ -90,6 +92,8 @@ impl Session {
             ready: AtomicBool::new(false),
             first_write: AtomicBool::new(true),
             inflight: AtomicU64::new(0),
+            io_lock: tokio::sync::Mutex::new(()),
+            last_io_error: Mutex::new(None),
             classic_wevibe,
             endpoints: RwLock::new(HashMap::new()),
             write_modes: RwLock::new(HashMap::new()),
@@ -109,6 +113,17 @@ impl Drop for PendingGuard<'_> {
     }
 }
 
+/// Release the in-progress address even when a connect future is cancelled.
+pub struct ConnectionAttempt {
+    bridge: Arc<Bridge>,
+    address: String,
+}
+impl Drop for ConnectionAttempt {
+    fn drop(&mut self) {
+        self.bridge.connecting.lock().unwrap().remove(&self.address);
+    }
+}
+
 /// A new WebSocket gets a new epoch. Old replies cannot complete new RPCs.
 pub struct Bridge {
     writer: Mutex<Option<(u64, mpsc::Sender<Value>)>>,
@@ -123,6 +138,7 @@ pub struct Bridge {
     pub reconnect_paused: AtomicBool,
     candidates: Mutex<HashMap<String, Candidate>>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    connecting: Mutex<HashSet<String>>,
     comm_sender: Mutex<Option<mpsc::Sender<HardwareCommunicationManagerEvent>>>,
     configuration: Arc<DeviceConfigurationManager>,
     pub manual_timeout: AtomicU64,
@@ -146,6 +162,7 @@ impl Bridge {
             reconnect_paused: AtomicBool::new(false),
             candidates: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            connecting: Mutex::new(HashSet::new()),
             comm_sender: Mutex::new(None),
             configuration,
             manual_timeout: AtomicU64::new(60),
@@ -214,6 +231,7 @@ impl Bridge {
 
     pub async fn rpc(&self, mut value: Value, timeout: Duration) -> DeviceResult<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let operation = value["op"].as_str().unwrap_or("unknown").to_owned();
         // Pin transport and epoch together; this RPC may never migrate to a
         // newly attached bridge if the old socket disappears while it awaits.
         let (epoch, writer) = self
@@ -246,9 +264,16 @@ impl Bridge {
         }
         match result {
             Ok(Ok(Ok(value))) => Ok(value),
-            Ok(Ok(Err(error))) => Err(device_error(error)),
+            Ok(Ok(Err(error))) => Err(device_error(if error.trim().is_empty() {
+                format!("Home Assistant Bluetooth {operation} failed without error details")
+            } else {
+                error
+            })),
             Ok(Err(_)) => Err(device_error("Bridge operation was cancelled")),
-            Err(_) => Err(device_error("Home Assistant Bluetooth operation timed out")),
+            Err(_) => Err(device_error(format!(
+                "Home Assistant Bluetooth {operation} timed out after {} seconds",
+                timeout.as_secs()
+            ))),
         }
     }
 
@@ -299,6 +324,32 @@ impl Bridge {
             candidate.attempted = false;
         }
         Ok(())
+    }
+
+    pub fn begin_connection(self: &Arc<Self>, address: &str) -> Option<ConnectionAttempt> {
+        if !self.connecting.lock().unwrap().insert(address.to_owned()) {
+            return None;
+        }
+        Some(ConnectionAttempt {
+            bridge: self.clone(),
+            address: address.to_owned(),
+        })
+    }
+
+    pub async fn device_status(
+        &self,
+        address: &str,
+        connection_id: &str,
+        phase: &str,
+        error: Option<&str>,
+    ) {
+        tracing::info!(address, connection_id, phase, error = ?error, "IntiHA device connection stage");
+        let _ = self
+            .send(json!({
+                "type":"device_status", "address":address, "connection_id":connection_id,
+                "phase":phase, "error":error
+            }))
+            .await;
     }
 
     pub fn supported(&self, address: &str) -> bool {
@@ -395,6 +446,7 @@ impl Bridge {
             .values()
             .map(|s| s.address.clone())
             .collect();
+        let connecting = self.connecting.lock().unwrap().clone();
         let now = Instant::now();
         let due: Vec<_> = {
             let mut candidates = self.candidates.lock().unwrap();
@@ -410,6 +462,7 @@ impl Bridge {
                 .filter_map(|candidate| {
                     if !candidate.announced
                         || connected.contains(&candidate.advertisement.address)
+                        || connecting.contains(&candidate.advertisement.address)
                         || now.duration_since(candidate.seen) > Duration::from_secs(120)
                         || candidate.next_attempt > now
                         || (candidate.attempted
@@ -824,5 +877,28 @@ mod tests {
         );
         assert!(!session.ready.load(Ordering::SeqCst));
         assert_eq!(bridge.candidates.lock().unwrap()[address].attempts, 1);
+    }
+
+    #[test]
+    fn connect_attempt_guard_prevents_overlap_and_releases_on_drop() {
+        let bridge = Bridge::new(Arc::new(DeviceConfigurationManager::default()));
+        let address = "AA:BB:CC:DD:EE:01";
+        let attempt = bridge.begin_connection(address).unwrap();
+        assert!(bridge.begin_connection(address).is_none());
+        drop(attempt);
+        assert!(bridge.begin_connection(address).is_some());
+    }
+
+    #[tokio::test]
+    async fn rpc_timeout_reports_operation_instead_of_empty_error() {
+        let bridge = Bridge::new(Arc::new(DeviceConfigurationManager::default()));
+        let (tx, _rx) = mpsc::channel(4);
+        bridge.attach(tx);
+        let error = bridge
+            .rpc(json!({"op":"prepare_stop"}), Duration::from_millis(1))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("prepare_stop"));
+        assert!(bridge.pending.lock().unwrap().is_empty());
     }
 }

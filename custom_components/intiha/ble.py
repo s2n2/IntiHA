@@ -38,7 +38,16 @@ MAX_EVENTS = 256
 MAX_RETIRED_IDS = 4096
 _ADDRESS = re.compile(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\Z")
 _OPS = frozenset(
-    {"connect", "disconnect", "read", "write", "subscribe", "unsubscribe", "set_stop_plan"}
+    {
+        "connect",
+        "disconnect",
+        "read",
+        "write",
+        "subscribe",
+        "unsubscribe",
+        "set_stop_plan",
+        "prepare_stop",
+    }
 )
 
 
@@ -239,6 +248,8 @@ class BleBridge:
             if not connection.client.is_connected:
                 self._connection_lost(address, connection_id, "link_lost")
                 raise BleBridgeError("BLE connection is no longer connected")
+            if op == "prepare_stop":
+                return await self._prepare_stop(connection, request, epoch)
             if op == "set_stop_plan":
                 writes = request.get("writes")
                 if not isinstance(writes, list) or not 1 <= len(writes) <= MAX_STOP_WRITES:
@@ -277,14 +288,77 @@ class BleBridge:
                     elif op == "unsubscribe" and uuid in connection.subscriptions:
                         connection.subscriptions.remove(uuid)
                         await connection.client.stop_notify(characteristic)
-            except BaseException:
+            except BaseException as err:
                 # An uncertain write must never be silently retried, nor can
                 # queued commands continue on a link whose state is unknown.
                 if self._connections.get(address) is connection:
                     self._connections.pop(address)
                     await self._close_connection(connection, "gatt_operation_failed")
-                raise
+                if isinstance(err, asyncio.CancelledError):
+                    raise
+                if isinstance(err, TimeoutError):
+                    raise BleBridgeError(
+                        f"GATT {op} timed out after {IO_TIMEOUT:g}s on {uuid}"
+                    ) from err
+                raise BleBridgeError(
+                    f"GATT {op} failed on {uuid}: {str(err).strip() or type(err).__name__}"
+                ) from err
             return {}
+
+    async def _prepare_stop(
+        self, connection: _Connection, request: dict[str, Any], epoch: int
+    ) -> dict[str, Any]:
+        """Write AND cache a stop on this exact live connection, atomically.
+
+        The caller owns the per-address operation lock. A protocol 'Ok' or an
+        idle queue is not verification: every GATT write must actually return.
+        Store the validated plan first so cancellation/bridge loss still has a
+        local stop to attempt. A failed verification never enables controls.
+        """
+        writes = request.get("writes")
+        if not isinstance(writes, list) or not 1 <= len(writes) <= MAX_STOP_WRITES:
+            raise ValueError("Stop plan must contain 1 to 16 writes")
+        plan = tuple(self._validate_write(connection, write) for write in writes)
+        connection.stop_plan = plan
+        try:
+            async with asyncio.timeout(IO_TIMEOUT):
+                for write in plan:
+                    if (
+                        self._epoch != epoch
+                        or self._resetting
+                        or self._connections.get(connection.address) is not connection
+                        or not connection.client.is_connected
+                    ):
+                        raise BleBridgeError("Bluetooth link changed during stop verification")
+                    await connection.client.write_gatt_char(
+                        write.characteristic, write.data, response=write.response
+                    )
+                if (
+                    self._epoch != epoch
+                    or self._resetting
+                    or self._connections.get(connection.address) is not connection
+                    or not connection.client.is_connected
+                ):
+                    raise BleBridgeError("Bluetooth link lost before stop verification completed")
+        except BaseException as err:
+            if self._connections.get(connection.address) is connection:
+                self._connections.pop(connection.address)
+                await self._close_connection(connection, "stop_verification_failed")
+            if isinstance(err, asyncio.CancelledError):
+                raise
+            if isinstance(err, TimeoutError):
+                raise BleBridgeError(
+                    f"Stop GATT write timed out after {IO_TIMEOUT:g}s; link closed"
+                ) from err
+            raise BleBridgeError(
+                f"Stop GATT write failed: {str(err).strip() or type(err).__name__}"
+            ) from err
+        _LOGGER.debug("Verified and cached %s stop writes for this BLE session", len(plan))
+        return {
+            "verified": True,
+            "connection_id": connection.connection_id,
+            "write_count": len(plan),
+        }
 
     async def _connect(self, address: str, connection_id: str, epoch: int) -> dict[str, Any]:
         if address in self._closing:
@@ -325,10 +399,13 @@ class BleBridge:
                     TrackedClient,
                     device,
                     name=device.name or "IntiHA device",
-                    disconnected_callback=lambda _client: self._connection_lost(
-                        address, connection_id, "link_lost"
+                    disconnected_callback=lambda client: self._connection_lost(
+                        address, connection_id, "link_lost", client=client
                     ),
-                    max_attempts=2,
+                    # The engine owns the retry/backoff state machine. One
+                    # bounded attempt here avoids two proxy attempts overrunning
+                    # the RPC deadline and producing an empty TimeoutError.
+                    max_attempts=1,
                     timeout=15.0,
                 )
             if (
@@ -342,9 +419,15 @@ class BleBridge:
             connection = _Connection(address, connection_id, client)
             result = self._services(connection)
             self._connections[address] = connection
-        except BaseException:
+        except BaseException as err:
             for pending in created:
                 await self._disconnect_client(pending)
+            if isinstance(err, asyncio.CancelledError):
+                raise
+            if isinstance(err, TimeoutError):
+                raise BleBridgeError(
+                    f"BLE connection/service discovery timed out after {CONNECT_TIMEOUT:g}s"
+                ) from err
             raise
         finally:
             self._connecting.discard(address)
@@ -472,9 +555,18 @@ class BleBridge:
         except Exception:
             _LOGGER.debug("A BLE link could not be cleanly disconnected", exc_info=True)
 
-    def _connection_lost(self, address: str, connection_id: str, reason: str) -> None:
+    def _connection_lost(
+        self, address: str, connection_id: str, reason: str, *, client: Any = None
+    ) -> None:
         connection = self._connections.get(address)
-        if connection is None or connection.connection_id != connection_id:
+        if (
+            connection is None
+            or connection.connection_id != connection_id
+            or (client is not None and connection.client is not client)
+        ):
+            # A retry can create more than one client under the same RPC ID.
+            # A late disconnect from the abandoned client must not retire its
+            # successful replacement.
             return
         self._connections.pop(address)
         task = self._spawn(self._close_retired_connection(connection, reason), "BLE disconnected")

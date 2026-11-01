@@ -16,8 +16,37 @@ use tokio::{
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const ADDRESS: &str = "AA:BB:CC:DD:EE:01";
-const TX: &str = "f000c000-0451-4000-b000-000000000000";
-const RX: &str = "f000b000-0451-4000-b000-000000000000";
+fn official_wevibe_services() -> Vec<Value> {
+    use buttplug_server_device_config::{ProtocolCommunicationSpecifier, load_protocol_configs};
+    let config = load_protocol_configs(&None, &None, false)
+        .unwrap()
+        .finish()
+        .unwrap();
+    let mut services = HashMap::<String, HashMap<String, Value>>::new();
+    for (name, specifiers) in config.base_communication_specifiers() {
+        if name != "wevibe" && name != "wevibe-8bit" {
+            continue;
+        }
+        for specifier in specifiers {
+            if let ProtocolCommunicationSpecifier::BluetoothLE(ble) = specifier {
+                for (service, characteristics) in ble.services() {
+                    for uuid in characteristics.values() {
+                        services.entry(service.to_string()).or_default().insert(
+                            uuid.to_string(),
+                            json!({"uuid":uuid.to_string(),"handle":1,"properties":["read","write","write-without-response","notify"]}),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    services
+        .into_iter()
+        .map(|(uuid, characteristics)| {
+            json!({"uuid":uuid,"characteristics":characteristics.into_values().collect::<Vec<_>>()})
+        })
+        .collect()
+}
 
 struct Harness {
     app: Arc<App>,
@@ -29,6 +58,9 @@ struct Harness {
 }
 impl Harness {
     async fn start() -> Self {
+        Self::start_with_stop_failure(false).await
+    }
+    async fn start_with_stop_failure(fail_stop: bool) -> Self {
         let config = Config {
             bind: "127.0.0.1".into(),
             client_port: 0,
@@ -71,6 +103,7 @@ impl Harness {
         let event_sender = events.clone();
         let writes = Arc::new(Mutex::new(Vec::new()));
         let captured = writes.clone();
+        let services = official_wevibe_services();
         let task = tokio::spawn(async move {
             let mut stop_plans = HashMap::<String, Vec<Value>>::new();
             loop {
@@ -86,10 +119,22 @@ impl Harness {
                                 let value: Value = serde_json::from_str(&text).unwrap();
                                 let _ = event_sender.send(value.clone());
                                 if value["type"] != "request" { continue; }
+                                if fail_stop && value["op"] == "prepare_stop" {
+                                    let response = json!({"type":"response","id":value["id"],"ok":false,"error":"Simulated stop write failed"});
+                                    if socket.send(Message::Text(response.to_string().into())).await.is_err() { break; }
+                                    continue;
+                                }
                                 let result = match value["op"].as_str().unwrap() {
-                                    "connect" => json!({"services":[{"uuid":"f000bb03-0451-4000-b000-000000000000","characteristics":[{"uuid":TX,"handle":1,"properties":["write"]},{"uuid":RX,"handle":2,"properties":["notify","read"]}]}]}),
+                                    "connect" => json!({"services":services}),
                                     "read" => json!({"data":[100]}),
                                     "write" => { captured.lock().unwrap().push(value.clone()); json!({}) }
+                                    "prepare_stop" => {
+                                        let plan = value["writes"].as_array().unwrap().clone();
+                                        assert!(!plan.is_empty());
+                                        captured.lock().unwrap().extend(plan.clone());
+                                        stop_plans.insert(value["connection_id"].as_str().unwrap().to_owned(), plan.clone());
+                                        json!({"verified":true,"connection_id":value["connection_id"],"write_count":plan.len()})
+                                    }
                                     "set_stop_plan" => {
                                         let writes=value["writes"].as_array().unwrap().clone(); assert!(!writes.is_empty());
                                         stop_plans.insert(value["connection_id"].as_str().unwrap().to_owned(),writes); json!({})
@@ -141,8 +186,11 @@ impl Harness {
         .expect("Expected bridge event before timeout")
     }
     async fn ready(&self) -> Value {
+        self.ready_named("Rave").await
+    }
+    async fn ready_named(&self, name: &str) -> Value {
         let mut events = self.events.subscribe();
-        self.send(json!({"type":"advertisement","address":ADDRESS,"name":"Rave","service_uuids":[],"manufacturer_data":{},"rssi":-45,"source":"mock-proxy"})).await;
+        self.send(json!({"type":"advertisement","address":ADDRESS,"name":name,"service_uuids":[],"manufacturer_data":{},"rssi":-45,"source":"mock-proxy"})).await;
         Self::wait(&mut events, |v| {
             v["type"] == "devices" && v["devices"][0]["ready"] == true
         })
@@ -175,8 +223,8 @@ async fn real_engine_uses_gatt_stop_plan_and_never_pulses_on_connect() {
     assert_eq!(device["address"], ADDRESS);
     let writes = h.writes.lock().unwrap().clone();
     assert!(
-        writes.len() >= 3,
-        "Initialise twice and capture official stop"
+        writes.len() >= 2,
+        "Initialise stopped and verify the cached stop"
     );
     assert!(
         writes
@@ -334,6 +382,52 @@ async fn compatible_devices_connect_automatically_without_selection_or_search() 
             .unwrap()
             .iter()
             .all(|write| write["data"] == json!([15, 0, 0, 0, 0, 0, 0, 0]))
+    );
+    h.finish().await;
+}
+
+#[tokio::test]
+async fn official_bond_profile_generates_and_verifies_its_own_stop() {
+    let h = Harness::start().await;
+    let mut events = h.events.subscribe();
+    let device = h.ready_named("Bond").await;
+    assert!(device["DeviceName"].as_str().unwrap().contains("Bond"));
+    assert_eq!(device["ready"], true);
+    let mut prepared = false;
+    while let Ok(event) = events.try_recv() {
+        if event["op"] == "prepare_stop" {
+            assert!(!event["writes"].as_array().unwrap().is_empty());
+            prepared = true;
+        }
+    }
+    assert!(
+        prepared,
+        "Bond must pass the real transport verification stage"
+    );
+    assert!(!h.writes.lock().unwrap().is_empty());
+    h.finish().await;
+}
+
+#[tokio::test]
+async fn failed_atomic_stop_never_enables_bond_controls() {
+    let h = Harness::start_with_stop_failure(true).await;
+    let mut events = h.events.subscribe();
+    h.send(json!({"type":"advertisement","address":ADDRESS,"name":"Bond","service_uuids":[],"manufacturer_data":{}})).await;
+    let failure = Harness::wait(&mut events, |v| {
+        v["type"] == "device_status"
+            && v["phase"] == "retrying"
+            && v["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("Simulated stop write failed"))
+    })
+    .await;
+    assert!(failure["error"].as_str().unwrap().contains("control refused"));
+    assert!(
+        h.app
+            .bridge
+            .all_sessions()
+            .iter()
+            .all(|s| !s.ready.load(Ordering::SeqCst))
     );
     h.finish().await;
 }

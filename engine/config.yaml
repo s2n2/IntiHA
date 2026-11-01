@@ -1,5 +1,5 @@
 name: IntiHA Engine
-version: "0.2.3"
+version: "0.2.4"
 slug: intiha_engine
 description: Buttplug server using the IntiHA integration and Home Assistant Bluetooth proxies
 url: https://github.com/s2n2/IntiHA

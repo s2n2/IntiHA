@@ -76,11 +76,11 @@ class EngineBridge:
                     raise
             except aiohttp.WSServerHandshakeError as err:
                 error = f"Engine HTTP error {err.status}"
-            except aiohttp.ClientError, OSError, TimeoutError:
+            except (aiohttp.ClientError, OSError, TimeoutError):
                 error = "Cannot reach engine"
             except BridgeError as err:
                 error = str(err)
-            except KeyError, ValueError, TypeError:
+            except (KeyError, ValueError, TypeError):
                 error = "Invalid engine response"
             finally:
                 self._connection_task = None
@@ -148,8 +148,10 @@ class EngineBridge:
                                 )
                     else:
                         await self._on_message(data, epoch)
-                elif message.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
-                    break
+                elif message.type == aiohttp.WSMsgType.ERROR:
+                    raise BridgeError("Engine WebSocket receive failed")
+                elif message.type == aiohttp.WSMsgType.CLOSED:
+                    raise BridgeError("Engine WebSocket closed")
                 if self._closed or generation != self._restart_generation:
                     break
 

@@ -100,10 +100,17 @@ impl HardwareConnector for HaConnector {
         if !self.bridge.enabled.load(Ordering::SeqCst) || !self.bridge.supported(address) {
             return Err(device_error("Device is disabled or unsupported"));
         }
+        let _attempt = self
+            .bridge
+            .begin_connection(address)
+            .ok_or_else(|| device_error("A connection attempt is already in progress"))?;
         if self.bridge.session_for(address).is_some() {
             return Err(device_error("Device already has a BLE connection"));
         }
         let id = Uuid::new_v4().to_string();
+        self.bridge
+            .device_status(address, &id, "connecting", None)
+            .await;
         let result = self
             .bridge
             .rpc(
@@ -115,6 +122,10 @@ impl HardwareConnector for HaConnector {
             Ok(value) => value,
             Err(error) => {
                 self.bridge.failed_attempt(address);
+                let detail = error.to_string();
+                self.bridge
+                    .device_status(address, &id, "retrying", Some(&detail))
+                    .await;
                 // A connect may have completed at HA just as the RPC timed out.
                 let _ = self
                     .bridge
@@ -157,6 +168,9 @@ impl HardwareConnector for HaConnector {
             self.protocols.iter().any(|p| p == "wevibe"),
         ));
         self.bridge.register(session.clone());
+        self.bridge
+            .device_status(address, &id, "initialising", None)
+            .await;
         Ok(Box::new(HaSpecializer {
             bridge: self.bridge.clone(),
             session,
@@ -268,6 +282,7 @@ impl HaHardware {
         let session = self.session.clone();
         let characteristic = session.endpoints.read().unwrap().get(&endpoint).cloned();
         async move {
+            let io_guard = session.io_lock.lock().await;
             if !session.connected.load(Ordering::SeqCst) || bridge.session(&session.id).is_none() {
                 return Err(device_error(
                     "BLE session has expired; command was not replayed",
@@ -280,11 +295,20 @@ impl HaHardware {
             args["connection_id"] = session.id.clone().into();
             args["characteristic"] = characteristic.into();
             session.inflight.fetch_add(1, Ordering::SeqCst);
-            let _guard = OperationGuard(session.clone());
-            let result = bridge.rpc(args, Duration::from_secs(12)).await;
-            if result.is_err() {
-                // A timed-out write has unknown delivery state. Tear down the session;
-                // never replay the command on a fresh connection.
+            let result = {
+                let _guard = OperationGuard(session.clone());
+                // HA keeps the actual I/O deadline at 10s. Its failure path
+                // may also spend 4s on a cached stop, 5s disconnecting, 10s
+                // emitting two lifecycle events and 10s sending the reply.
+                // Allow that bounded cleanup/reporting, not just the write.
+                // This does NOT extend the physical GATT operation timeout.
+                bridge.rpc(args, Duration::from_secs(40)).await
+            };
+            drop(io_guard);
+            if let Err(error) = &result {
+                *session.last_io_error.lock().unwrap() = Some(format!("{op}: {error}"));
+                // Do not count teardown as an in-flight GATT operation.
+                // No motion is replayed after a write with uncertain delivery.
                 let _ = bridge.disconnect_session(&session).await;
             }
             result
@@ -387,16 +411,41 @@ impl HardwareInternal for HaHardware {
             response: message.write_with_response(),
         };
         let session = self.session.clone();
+        let bridge = self.bridge.clone();
         let result = self.operation(
             message.endpoint(),
             "write",
             json!({"data":data,"response":message.write_with_response()}),
         );
         async move {
-            result.await?;
-            if let Some(recording) = session.stop_recording.lock().unwrap().as_mut() {
-                recording.push(write);
+            // During stop preparation the official protocol driver compiles
+            // its stop into a packet plan; it does NOT send the packet yet.
+            // Otherwise a slow GATT write holds up the driver's queue and the
+            // stop-plan capture times out before we can even cache a stop.
+            // Only unready sessions can enter this mode. Real verification is
+            // the separate prepare_stop RPC; this is never a ready signal.
+            if !session.connected.load(Ordering::SeqCst)
+                || !bridge.enabled.load(Ordering::SeqCst)
+                || bridge.session(&session.id).is_none()
+            {
+                return Err(device_error("Connection expired while preparing a stop"));
             }
+            {
+                let mut recording = session.stop_recording.lock().unwrap();
+                if let Some(writes) = recording.as_mut() {
+                    if session.ready.load(Ordering::SeqCst) {
+                        return Err(device_error(
+                            "Cannot capture stop packets on a ready device",
+                        ));
+                    }
+                    if write.characteristic.is_empty() || writes.len() >= 16 {
+                        return Err(device_error("Invalid or oversized generated stop plan"));
+                    }
+                    writes.push(write);
+                    return Ok(());
+                }
+            }
+            result.await?;
             Ok(())
         }
         .boxed()
@@ -476,5 +525,32 @@ mod tests {
         assert_eq!(safe_initial_write(false, true, uuid, &pulse), pulse);
         assert_eq!(safe_initial_write(true, false, uuid, &pulse), pulse);
         assert_eq!(safe_initial_write(true, true, "other", &pulse), pulse);
+    }
+
+    #[tokio::test]
+    async fn driver_stop_is_captured_without_starting_gatt_or_enabling_controls() {
+        let bridge = Bridge::new(Arc::new(
+            buttplug_server_device_config::DeviceConfigurationManager::default(),
+        ));
+        bridge.enabled.store(true, Ordering::SeqCst);
+        let session = Arc::new(Session::new("AA:BB:CC:DD:EE:01", "capture", false));
+        session
+            .endpoints
+            .write()
+            .unwrap()
+            .insert(Endpoint::Tx, CLASSIC_WEVIBE_TX.into());
+        *session.stop_recording.lock().unwrap() = Some(Vec::new());
+        bridge.register(session.clone());
+        let hardware = HaHardware {
+            bridge,
+            session: session.clone(),
+        };
+        // Arbitrary bytes test capture fidelity, not a guessed device protocol.
+        let command = HardwareWriteCmd::new(&[], Endpoint::Tx, vec![7, 0, 9], true);
+        hardware.write_value(&command).await.unwrap();
+        let recording = session.stop_recording.lock().unwrap();
+        assert_eq!(recording.as_ref().unwrap()[0].data, vec![7, 0, 9]);
+        assert_eq!(session.inflight.load(Ordering::SeqCst), 0);
+        assert!(!session.ready.load(Ordering::SeqCst));
     }
 }

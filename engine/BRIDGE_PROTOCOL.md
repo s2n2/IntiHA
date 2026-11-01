@@ -12,7 +12,7 @@ HA first sends:
 {"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60}
 ```
 
-The engine replies `{"type":"hello","protocol":1,"version":"0.2.2"}`.
+The engine replies `{"type":"hello","protocol":1,"version":"0.2.4"}`.
 The socket establishes a new generation; previous pending RPCs and BLE sessions
 must never survive it. `connection_id` is a new UUID for each physical connect.
 The address is uppercase. No command is replayed after reconnection.
@@ -42,17 +42,25 @@ devices; it is not required for first discovery.
 ```
 
 Operations: `connect`, `disconnect`, `read`, `write`, `subscribe`,
-`unsubscribe`, `set_stop_plan`, and `scan`. GATT operations contain address and
+`unsubscribe`, `set_stop_plan`, `prepare_stop`, and `scan`. GATT operations contain address and
 connection_id. `read`, `subscribe`, and `unsubscribe` contain `characteristic`.
 `scan` contains `enabled` and does not have a device address.
 
-`set_stop_plan` contains `writes`, a list of
-`{"characteristic":"uuid","data":[0],"response":true}`. These writes are
-captured from the official driver's stop command. HA stores them in the exact
-session and tries them before disconnect on off, bridge loss, or shutdown.
-Stop-plan registration must succeed before normal device control is admitted.
-The engine waits for actual GATT completion when capturing this plan; the
-upstream stop command's `Ok` alone is not treated as proof of completion.
+`prepare_stop` (requires both components >= 0.2.4) contains `writes`, a list
+of 1 to 16 `{"characteristic":"uuid","data":[0],"response":true}` entries.
+The engine obtains these from the official driver's stop operation in an
+unready, packet-capture phase, or from its strictly matched classic We-Vibe
+stop definition. Packet capture itself never verifies a stop or enables
+controls. Other protocol payloads are not guessed.
+
+Under the device's operation lock, HA validates every characteristic, byte
+array and write mode; caches the plan for cleanup; writes it to this exact
+connection; and returns `{"verified":true,"connection_id":"uuid","write_count":1}`
+only after all writes complete and that session is still current. The engine
+checks all three fields before setting `ready`. Failure closes the link after
+attempting the cached stop. HA keeps the cached plan for master-off, bridge
+loss and shutdown. The old `set_stop_plan` operation remains accepted for
+compatibility but is not sufficient to make a 0.2.4 engine mark a device ready.
 
 ```json
 {"type":"response","id":1,"ok":true,"result":{"services":[{"uuid":"uuid","characteristics":[{"uuid":"uuid","handle":1,"properties":["read","write","notify"]}]}]}}
@@ -60,12 +68,16 @@ upstream stop command's `Ok` alone is not treated as proof of completion.
 {"type":"response","id":3,"ok":false,"error":"The device is not connected"}
 ```
 
-Read result is `{"data":[0,1]}`. Other successful operations return `{}`.
+Read result is `{"data":[0,1]}`. `prepare_stop` has the explicit acknowledgement
+above; other successful operations return `{}`.
 `disconnect` first tries the cached stop plan and then closes the radio link.
 If a stop write fails it must return `ok:false` **after** closing the link;
 an unsuccessful stop must never be hidden by a successful disconnect.
 Connect timeout
-is 50 seconds; GATT requests 12 seconds; no device operation can be queued for
+is 50 seconds; GATT requests and stop verification allow 40 seconds for the
+HA I/O deadline (10 seconds), bounded cleanup (4-second stop and 5-second
+disconnect), two bounded lifecycle notifications (5 seconds each), and the
+bounded response send (10 seconds). A connect performs one backend attempt per engine retry; no device operation can be queued for
 a different connection. Notifications and disconnect callbacks carry the
 original connection_id. HA must reject an unknown/stale connection_id.
 
@@ -112,6 +124,9 @@ confirmed for devices that provide no output feedback or write acknowledgement.
   `connected_clients`, `scanning`, `version`, and `last_error`.
 * `discovered`: `address`, `name`, `protocols` (matching upstream protocol
   identifiers), optionally advertisement signal/source fields.
+* `device_status`: `address`, `connection_id`, `phase`, `error`. Phases are
+  connecting, initialising, verifying_stop, retrying and ready. These are
+  diagnostic; only the inventory ready flag enables HA controls.
 * `devices`: `devices`, an array of v3 DeviceList entries augmented with
   `address`, `connection_id`, and `ready`. Refreshes on each inventory change.
 * `output_clear`: optional `address`; clear cached control values for that

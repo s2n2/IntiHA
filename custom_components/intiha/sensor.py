@@ -59,7 +59,15 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
             self._attr_device_class = SensorDeviceClass.ENUM
             self._attr_options = {
                 "status": ["disabled", "connecting", "ready", "stop_unconfirmed"],
-                "device_status": ["disabled", "offline", "connected"],
+                "device_status": [
+                    "disabled",
+                    "offline",
+                    "connecting",
+                    "initialising",
+                    "verifying_stop",
+                    "retrying",
+                    "connected",
+                ],
                 "control_owner": ["none", "home_assistant", "external_client"],
             }[key]
 
@@ -74,6 +82,8 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                     if not coordinator.enabled
                     else "connected"
                     if device.connected
+                    else device.phase
+                    if device.phase in ("connecting", "initialising", "verifying_stop", "retrying")
                     else "offline"
                 )
             return {
@@ -95,5 +105,6 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         if self.address and self.key == "device_status":
-            return {"last_error": self.coordinator.devices[self.address].error}
+            device = self.coordinator.devices[self.address]
+            return {"last_error": device.error, "connection_phase": device.phase}
         return None

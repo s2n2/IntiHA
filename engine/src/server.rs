@@ -1,5 +1,9 @@
 //! Tokenless LAN WebSocket front doors and lifecycle supervision.
-use crate::{VERSION, bridge::Bridge, hardware::HaManagerBuilder};
+use crate::{
+    VERSION,
+    bridge::{Bridge, Session, StopWrite},
+    hardware::HaManagerBuilder,
+};
 use axum::{
     Json, Router,
     extract::{
@@ -77,6 +81,14 @@ struct ReconnectPause<'a>(&'a AtomicBool);
 impl Drop for ReconnectPause<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+// Cancellation of the discovery supervisor must not leave a recording armed.
+struct StopCapture(Arc<Session>);
+impl Drop for StopCapture {
+    fn drop(&mut self) {
+        self.0.stop_recording.lock().unwrap().take();
     }
 }
 
@@ -385,110 +397,11 @@ impl App {
                 && !session.ready.load(Ordering::SeqCst)
                 && self.bridge.enabled.load(Ordering::SeqCst)
             {
-                *session.stop_recording.lock().unwrap() = Some(Vec::new());
-                let stop = self
-                    .v3(json!({"StopDeviceCmd":{"Id":1,"DeviceIndex":index}}))
-                    .await;
-                // The upstream stop waiter deliberately returns Ok after its
-                // one-second timeout. Wait for our real GATT operations and a
-                // quiet capture window before accepting a complete stop plan.
-                let settled = tokio::time::timeout(Duration::from_secs(15), async {
-                    loop {
-                        if !session.connected.load(Ordering::SeqCst) {
-                            return false;
-                        }
-                        if session.inflight.load(Ordering::SeqCst) == 0 {
-                            let count = session
-                                .stop_recording
-                                .lock()
-                                .unwrap()
-                                .as_ref()
-                                .map_or(0, Vec::len);
-                            tokio::time::sleep(Duration::from_millis(150)).await;
-                            if session.inflight.load(Ordering::SeqCst) == 0
-                                && session
-                                    .stop_recording
-                                    .lock()
-                                    .unwrap()
-                                    .as_ref()
-                                    .map_or(0, Vec::len)
-                                    == count
-                            {
-                                return true;
-                            }
-                        } else {
-                            tokio::time::sleep(Duration::from_millis(25)).await;
-                        }
-                    }
-                })
-                .await
-                .unwrap_or(false);
-                let mut writes = session
-                    .stop_recording
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .unwrap_or_default();
-                let mut fallback_error = None;
-                // Buttplug can legitimately emit no GATT writes for StopDeviceCmd
-                // when its internal output state is already zero. The required
-                // cached safety stop still requires an awaited GATT write
-                // (including a response acknowledgement where supported).
-                // Only the verified classic We-Vibe profile permits the
-                // explicit all-motors-off packet below. All other devices
-                // remain unavailable until a real stop has been captured.
-                if stop.is_ok()
-                    && settled
-                    && session.connected.load(Ordering::SeqCst)
-                    && writes.is_empty()
-                {
-                    if let Some(write) = crate::hardware::classic_wevibe_stop_write(&session) {
-                        let result = self
-                            .bridge
-                            .rpc(
-                                json!({
-                                    "op":"write", "address":address, "connection_id":session.id,
-                                    "characteristic":write.characteristic, "data":write.data,
-                                    "response":write.response
-                                }),
-                                Duration::from_secs(12),
-                            )
+                match self.prepare_safe_stop(index, &session).await {
+                    Ok(()) if self.bridge.mark_ready(&session) => {
+                        self.bridge
+                            .device_status(&address, &session.id, "ready", None)
                             .await;
-                        match result {
-                            Ok(_) => writes.push(write),
-                            Err(error) => fallback_error = Some(error.to_string()),
-                        }
-                    } else {
-                        fallback_error = Some(
-                            "No verified stop packet exists for the connected GATT profile".into(),
-                        );
-                    }
-                }
-                if stop.is_ok()
-                    && settled
-                    && session.connected.load(Ordering::SeqCst)
-                    && !writes.is_empty()
-                    && writes.len() <= 16
-                {
-                    let plan = self
-                        .bridge
-                        .rpc(
-                            json!({"op":"set_stop_plan","address":address,"connection_id":session.id,"writes":writes}),
-                            Duration::from_secs(12),
-                        )
-                        .await;
-                    if let Err(error) = plan {
-                        *self.bridge.last_error.lock().unwrap() =
-                            Some(format!("Could not install verified stop plan: {error}"));
-                        let _ = self.bridge.send(self.bridge.status()).await;
-                        let _ = self.bridge.disconnect_session(&session).await;
-                    } else if !self.bridge.mark_ready(&session) {
-                        *self.bridge.last_error.lock().unwrap() =
-                            Some("BLE session expired while enabling safe controls".into());
-                        let _ = self.bridge.send(self.bridge.status()).await;
-                        let _ = self.bridge.disconnect_session(&session).await;
-                    } else {
-                        // Clear this obsolete error after a successful recovery.
                         let mut last_error = self.bridge.last_error.lock().unwrap();
                         if last_error.as_ref().is_some_and(|v| {
                             v.contains("stop command")
@@ -498,23 +411,18 @@ impl App {
                             *last_error = None;
                         }
                     }
-                } else {
-                    let reason = if let Err(error) = stop {
-                        format!("upstream StopDeviceCmd failed: {error}")
-                    } else if !settled {
-                        "stop operation did not settle within 15 seconds".into()
-                    } else if !session.connected.load(Ordering::SeqCst) {
-                        "Bluetooth link dropped during stop preparation".into()
-                    } else if writes.len() > 16 {
-                        "stop required more than 16 GATT writes".into()
-                    } else {
-                        fallback_error
-                            .unwrap_or_else(|| "upstream stop produced no GATT writes".into())
-                    };
-                    *self.bridge.last_error.lock().unwrap() =
-                        Some(format!("Safe stop unavailable: {reason}; control refused"));
-                    let _ = self.bridge.send(self.bridge.status()).await;
-                    let _ = self.bridge.disconnect_session(&session).await;
+                    result => {
+                        let reason = result.err().unwrap_or_else(|| {
+                            "Bluetooth session expired while enabling controls".into()
+                        });
+                        let error = format!("Safe stop unavailable: {reason}; control refused");
+                        *self.bridge.last_error.lock().unwrap() = Some(error.clone());
+                        self.bridge
+                            .device_status(&address, &session.id, "retrying", Some(&error))
+                            .await;
+                        let _ = self.bridge.send(self.bridge.status()).await;
+                        let _ = self.bridge.disconnect_session(&session).await;
+                    }
                 }
             }
             device["ready"] = session.ready.load(Ordering::SeqCst).into();
@@ -524,6 +432,139 @@ impl App {
         if *previous != value || !prepare {
             *previous = value.clone();
             let _ = self.bridge.send(value).await;
+        }
+        Ok(())
+    }
+
+    async fn prepare_safe_stop(&self, index: u64, session: &Arc<Session>) -> Result<(), String> {
+        self.bridge
+            .device_status(&session.address, &session.id, "verifying_stop", None)
+            .await;
+        // A known We-Vibe profile has a protocol-defined motor-off packet.
+        // Do NOT first submit a redundant StopDeviceCmd and wait for the
+        // upstream command queue to become idle: that was the v0.2.3 failure.
+        // Other protocols, including Bond / wevibe-8bit, compile their
+        // own stop packets through the official driver, without an initial
+        // Bluetooth write. Both paths then require the same real GATT check.
+        let _capture = StopCapture(session.clone());
+        let writes = if let Some(write) = crate::hardware::classic_wevibe_stop_write(session) {
+            vec![write]
+        } else {
+            self.capture_generic_stop(index, session).await?
+        };
+        self.verify_stop_plan(session, writes).await
+    }
+
+    async fn capture_generic_stop(
+        &self,
+        index: u64,
+        session: &Arc<Session>,
+    ) -> Result<Vec<StopWrite>, String> {
+        *session.stop_recording.lock().unwrap() = Some(Vec::new());
+        self.v3(json!({"StopDeviceCmd":{"Id":1,"DeviceIndex":index}}))
+            .await
+            .map_err(|error| format!("upstream StopDeviceCmd failed: {error}"))?;
+        let settled = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                // Check link/error first: a disconnection is NOT an idle timer expiry.
+                let error = session.last_io_error.lock().unwrap().clone();
+                if let Some(error) = error {
+                    return Err(format!("GATT stop preparation failed: {error}"));
+                }
+                if !session.connected.load(Ordering::SeqCst) {
+                    return Err("Bluetooth link dropped during stop preparation".to_owned());
+                }
+                if session.inflight.load(Ordering::SeqCst) == 0 {
+                    let count = session
+                        .stop_recording
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map_or(0, Vec::len);
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    if count > 0
+                        && session.connected.load(Ordering::SeqCst)
+                        && session.inflight.load(Ordering::SeqCst) == 0
+                        && session
+                            .stop_recording
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map_or(0, Vec::len)
+                            == count
+                    {
+                        return Ok(());
+                    }
+                } else {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }
+        })
+        .await;
+        match settled {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(format!(
+                    "official stop-plan generation did not settle ({} pending GATT operations)",
+                    session.inflight.load(Ordering::SeqCst)
+                ));
+            }
+        }
+        // Keep interception armed until prepare_stop has finished. No late
+        // queued stop/keepalive may bypass the atomic verification operation.
+        let writes = session
+            .stop_recording
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
+        if writes.is_empty() || writes.len() > 16 {
+            return Err("upstream stop did not provide 1 to 16 reusable GATT writes".into());
+        }
+        Ok(writes)
+    }
+
+    async fn verify_stop_plan(
+        &self,
+        session: &Arc<Session>,
+        writes: Vec<StopWrite>,
+    ) -> Result<(), String> {
+        // Serialise against initialization reads/writes on this same device.
+        // The socket reader and other devices continue processing normally.
+        let _io = session.io_lock.lock().await;
+        if !session.connected.load(Ordering::SeqCst)
+            || self.bridge.session(&session.id).is_none()
+            || !self.bridge.enabled.load(Ordering::SeqCst)
+            || self.bridge.reconnect_paused.load(Ordering::SeqCst)
+        {
+            return Err("connection was revoked before the stop write".into());
+        }
+        let expected_writes = writes.len() as u64;
+        let result = self
+            .bridge
+            .rpc(
+                json!({
+                    "op":"prepare_stop", "address":session.address,
+                    "connection_id":session.id, "writes":writes
+                }),
+                Duration::from_secs(40),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        // Require an explicit acknowledgement from the new HA implementation.
+        // Old integrations and a simple protocol Ok must not enable controls.
+        if result["verified"] != true
+            || result["connection_id"].as_str() != Some(session.id.as_str())
+            || result["write_count"].as_u64() != Some(expected_writes)
+        {
+            return Err("stop verification was not acknowledged; update the IntiHA HACS integration to 0.2.4 or later".into());
+        }
+        if !session.connected.load(Ordering::SeqCst)
+            || self.bridge.session(&session.id).is_none()
+            || !self.bridge.enabled.load(Ordering::SeqCst)
+            || self.bridge.reconnect_paused.load(Ordering::SeqCst)
+        {
+            return Err("connection was revoked during the stop write".into());
         }
         Ok(())
     }
@@ -695,6 +736,7 @@ async fn bridge_connection(app: Arc<App>, mut socket: WebSocket) {
     }
     let (tx, mut rx) = mpsc::channel::<Value>(64);
     let epoch = app.bridge.attach(tx);
+    tracing::info!(epoch, "Home Assistant bridge session attached");
     let (mut writer, mut reader) = socket.split();
     let _ = app
         .bridge
@@ -768,11 +810,15 @@ async fn bridge_connection(app: Arc<App>, mut socket: WebSocket) {
                 }
             }
             _ = heartbeat.tick() => {
-                if last_seen.elapsed() > Duration::from_secs(30) { break; }
+                if last_seen.elapsed() > Duration::from_secs(30) {
+                    tracing::warn!(epoch, "Home Assistant bridge heartbeat expired");
+                    break;
+                }
                 if !bounded_send(&mut writer, Message::Ping(Vec::new().into())).await { break; }
             }
         }
     }
+    tracing::info!(epoch, "Home Assistant bridge session ended; retiring old BLE sessions");
     app.bridge.detach(epoch);
     admin_task.abort();
     let _ = admin_task.await;

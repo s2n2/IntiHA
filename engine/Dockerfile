@@ -31,7 +31,7 @@ RUN set -eu; \
 
 FROM debian:bookworm-slim
 
-ARG BUILD_VERSION=0.2.3
+ARG BUILD_VERSION=0.2.4
 ARG BUILD_ARCH
 LABEL io.hass.version="${BUILD_VERSION}" \
       io.hass.type="app" \

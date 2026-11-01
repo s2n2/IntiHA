@@ -1,3 +1,38 @@
+# 0.2.4 validation record
+
+Date: 1 November 2026.
+
+**Executed for this patch:** 45 isolated Python transport tests passed using
+Python 3.13.5, pytest, pytest-asyncio and aiohttp. The production `ble.py` and
+`bridge.py` are exercised, with Home Assistant import surfaces and the radio
+replaced by test doubles. This is NOT a full Home Assistant or physical BLE
+validation. Reproduce with `python tools/run_offline_transport_tests.py` after
+installing pytest, pytest-asyncio and aiohttp.
+
+New cases cover successful atomic stop verification/caching, queued-command
+serialization, stalled/failed writes, dropped links, cancellation cleanup,
+stale IDs, invalid write properties, abandoned-client callbacks and useful
+connect/stop timeout messages. Existing bridge lifecycle tests remain included.
+
+Additional checks: changed Python files compile; JSON/YAML/TOML parse; release
+versions agree; patch applies to the supplied 0.2.3 baseline. These checks are
+reported separately from functional tests.
+
+**Not executed locally for 0.2.4:** Rust compiler/clippy/rustfmt, the new actual
+Buttplug Bond tests, the full HA integration suite, hassfest/HACS remote checks,
+or Docker builds. The environment lacks Rust, Docker and Home Assistant.
+GitHub Actions retains these validation gates. The Bond tests derive GATT
+layout from the pinned official device configuration, rather than guessing a
+classic profile or using a hand-coded Bond stop packet.
+
+**Physical validation pending:** the user's Bond and ESP32-C3 proxy. A completed
+GATT write is a transport acknowledgement, not measured motor feedback; no
+software test guarantees a stop after a physical radio link is lost.
+
+The records below belong to earlier versions and were NOT rerun for 0.2.4.
+
+---
+
 ## 0.2.2 packaging correction (validation status)
 
 - The image build no longer copies `engine/licenses/` from the Docker context.

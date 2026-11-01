@@ -117,7 +117,11 @@
         "state": {
           "disabled": "Disabled",
           "offline": "Offline",
-          "connected": "Connected"
+          "connected": "Connected",
+          "connecting": "Connecting",
+          "initialising": "Initialising",
+          "verifying_stop": "Checking stop command",
+          "retrying": "Retrying"
         }
       },
       "engine_address": {

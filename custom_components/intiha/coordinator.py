@@ -64,6 +64,7 @@ class DeviceState:
     battery: int | None = None
     outputs: dict[int, float] = field(default_factory=dict)
     error: str | None = None
+    phase: str = "offline"
 
     def scalar_features(self) -> list[dict[str, Any]]:
         """Expose vibration controls only when advertised by the real engine."""
@@ -421,6 +422,23 @@ class IntiHACoordinator:
                     device.outputs.clear()
         elif kind == "devices":
             self._update_devices(message.get("devices", []))
+        elif kind == "device_status":
+            address = str(message.get("address", "")).upper()
+            device = self.devices.get(address)
+            if device is not None:
+                connection_id = message.get("connection_id")
+                if device.connected and device.connection_id != connection_id:
+                    return  # A retired connection cannot overwrite the live device.
+                phase = message.get("phase")
+                if phase in ("connecting", "initialising", "verifying_stop", "retrying", "ready"):
+                    # Inventory's ready flag remains the only authority for
+                    # enabling controls. Stage notifications are diagnostic.
+                    device.phase = phase
+                if message.get("error"):
+                    device.error = self._safe_error(str(message["error"]))
+                    self.last_error = device.error
+                elif phase in ("connecting", "ready"):
+                    device.error = None
         elif kind == "discovered":
             address = str(message.get("address", "")).upper()
             device = self._register_device(address, str(message.get("name", "Device")))
@@ -493,7 +511,10 @@ class IntiHACoordinator:
             device.index = index
             device.connection_id = connection_id
             device.connected = description.get("ready") is True
-            device.error = None
+            if device.connected:
+                device.phase = "ready"
+                device.error = None
+            # A routine inventory refresh must not erase a useful failure.
             device.messages = description.get("DeviceMessages", {})
         for address, device in self.devices.items():
             if address not in connected:
@@ -552,6 +573,12 @@ class IntiHACoordinator:
             address = str(message.get("address", "")).upper()
             if address in self.devices:
                 self.devices[address].error = self._safe_error(err)
+                if message.get("op") in ("connect", "prepare_stop"):
+                    self.devices[address].phase = "retrying"
+                    self.last_error = self.devices[address].error
+            _LOGGER.debug(
+                "IntiHA BLE operation %s failed: %s", message.get("op"), self._safe_error(err)
+            )
             self._notify()
         with suppress(BridgeError):
             await self.bridge.send(response, epoch=epoch)
@@ -584,6 +611,8 @@ class IntiHACoordinator:
                 device = self.devices[address]
                 if device.connection_id in (None, message.get("connection_id")):
                     device.connected = False
+                    if device.phase != "retrying":
+                        device.phase = "offline"
                     device.index = None
                     device.connection_id = None
                     device.outputs.clear()
@@ -613,6 +642,9 @@ class IntiHACoordinator:
             device.battery = None
 
     async def _async_disconnected(self, reason: str) -> None:
+        _LOGGER.debug("IntiHA engine bridge disconnected: %s", reason)
+        for device in self.devices.values():
+            device.phase = "offline"
         self.engine_connected = False
         self.client_connected = False
         self.scanning = False
@@ -655,12 +687,12 @@ class IntiHACoordinator:
                 ):
                     value = int(data[0])
                     device.battery = value if 0 <= value <= 100 else None
-            except HomeAssistantError, ValueError, TypeError:
+            except (HomeAssistantError, ValueError, TypeError):
                 device.battery = None
         self._notify()
 
     def _safe_error(self, err: Exception | str) -> str:
-        text = str(err)
+        text = str(err).strip() or type(err).__name__
         # Do not record potentially credential-bearing URLs from network errors.
         text = re.sub(r"wss?://\S+", "[engine]", text)
         return text[:180]

@@ -135,7 +135,7 @@ async def radio(hass, monkeypatch):
     monkeypatch.setattr(ble, "BleakClientWithServiceCache", FakeClient)
 
     async def establish(client_class, device, name, **kwargs):
-        assert kwargs["max_attempts"] == 2
+        assert kwargs["max_attempts"] == 1
         assert kwargs["timeout"] >= 10
         client = client_class(device, **kwargs)
         result.clients.append(client)
@@ -284,7 +284,7 @@ async def test_gatt_timeout_invalidates_queued_commands_without_replay(radio, mo
     first = asyncio.create_task(radio.write([0x55]))
     await client.write_started.wait()
     queued = asyncio.create_task(radio.write([0x66]))
-    with pytest.raises(TimeoutError):
+    with pytest.raises(ble.BleBridgeError, match="GATT write timed out"):
         await first
     with pytest.raises(ble.BleBridgeError, match="stale"):
         await queued
@@ -420,3 +420,149 @@ async def test_clean_stop_removes_advertisement_subscription_and_can_restart(rad
     await radio.bridge.async_start()
     await radio.request("connect", "after-start")
     assert radio.bridge.connected_addresses == {ADDRESS}
+
+
+async def test_prepare_stop_writes_and_caches_before_acknowledging(radio):
+    await radio.request("connect")
+    result = await radio.request(
+        "prepare_stop",
+        writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+    )
+    assert result == {"verified": True, "connection_id": "first", "write_count": 1}
+    assert radio.clients[0].operations == [("write", CHARACTERISTIC, b"\x00", True)]
+    await radio.request("disconnect")
+    assert radio.clients[0].operations[-2:] == [
+        ("write", CHARACTERISTIC, b"\x00", True),
+        ("disconnect",),
+    ]
+
+
+async def test_prepare_stop_waits_for_gatt_and_serialises_following_commands(radio):
+    await radio.request("connect")
+    client = radio.clients[0]
+    client.block_payload = b"\x00"
+    pending = asyncio.create_task(
+        radio.request(
+            "prepare_stop",
+            writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+        )
+    )
+    await client.write_started.wait()
+    following = asyncio.create_task(radio.write([10]))
+    await asyncio.sleep(0)
+    assert not pending.done()
+    assert not following.done()
+    assert len(client.operations) == 1
+    client.write_release.set()
+    assert (await pending)["verified"] is True
+    await following
+    assert client.operations[-1][2] == b"\x0a"
+
+
+async def test_prepare_stop_write_failure_never_acknowledges_and_closes_link(radio):
+    await radio.request("connect")
+    radio.clients[0].fail_writes = True
+    with pytest.raises(ble.BleBridgeError, match="Stop GATT write failed"):
+        await radio.request(
+            "prepare_stop",
+            writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+        )
+    assert not radio.bridge.connected_addresses
+    assert radio.clients[0].operations[-1] == ("disconnect",)
+    assert any(event["type"] == "stop_failed" for event in radio.events)
+
+
+async def test_prepare_stop_dropped_link_cannot_return_verified(radio):
+    await radio.request("connect")
+    client = radio.clients[0]
+    client.block_payload = b"\x00"
+    pending = asyncio.create_task(
+        radio.request(
+            "prepare_stop",
+            writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+        )
+    )
+    await client.write_started.wait()
+    client.is_connected = False
+    client.disconnected_callback(client)
+    client.write_release.set()
+    with pytest.raises(ble.BleBridgeError, match="link lost"):
+        await pending
+    assert not radio.bridge.connected_addresses
+
+
+async def test_prepare_stop_cancelled_keeps_cached_stop_for_cleanup(radio, monkeypatch):
+    monkeypatch.setattr(ble, "STOP_TIMEOUT", 0.01)
+    await radio.request("connect")
+    client = radio.clients[0]
+    client.block_payload = b"\x00"
+    pending = asyncio.create_task(
+        radio.request(
+            "prepare_stop",
+            writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+        )
+    )
+    await client.write_started.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert not radio.bridge.connected_addresses
+    # Initial verification plus a separate best-effort cached stop, then close.
+    assert len([op for op in client.operations if op[0] == "write"]) == 2
+    assert client.operations[-1] == ("disconnect",)
+
+
+async def test_prepare_stop_timeout_has_useful_error_not_empty_string(radio, monkeypatch):
+    monkeypatch.setattr(ble, "IO_TIMEOUT", 0.01)
+    monkeypatch.setattr(ble, "STOP_TIMEOUT", 0.01)
+    await radio.request("connect")
+    radio.clients[0].block_payload = b"\x00"
+    with pytest.raises(ble.BleBridgeError, match="Stop GATT write timed out"):
+        await radio.request(
+            "prepare_stop",
+            writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+        )
+    assert not radio.bridge.connected_addresses
+
+
+async def test_retired_client_callback_under_same_rpc_id_is_ignored(radio):
+    await radio.request("connect")
+    current = radio.clients[0]
+    abandoned = FakeClient(current.device, disconnected_callback=lambda _: None)
+    # Both objects can belong to one logical establish-connection request.
+    current.disconnected_callback(abandoned)
+    assert radio.bridge.connected_addresses == {ADDRESS}
+    assert radio.bridge._connections[ADDRESS].client is current
+    assert not radio.bridge._closing
+
+
+async def test_prepare_stop_rejects_unsupported_write_mode_without_sending(radio):
+    await radio.request("connect")
+    radio.clients[0].services.characteristic.properties = ["read"]
+    with pytest.raises(ValueError, match="write mode"):
+        await radio.request(
+            "prepare_stop",
+            writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+        )
+    assert radio.clients[0].operations == []
+    assert not radio.bridge._connections[ADDRESS].stop_plan
+
+
+async def test_prepare_stop_rejects_stale_connection_id(radio):
+    await radio.request("connect")
+    with pytest.raises(ble.BleBridgeError, match="stale"):
+        await radio.request(
+            "prepare_stop",
+            "retired-id",
+            writes=[{"characteristic": CHARACTERISTIC, "data": [0], "response": True}],
+        )
+    assert radio.clients[0].operations == []
+
+
+async def test_connection_deadline_has_useful_error_and_cleans_client(radio, monkeypatch):
+    monkeypatch.setattr(ble, "CONNECT_TIMEOUT", 0.01)
+    radio.gate = asyncio.Event()
+    with pytest.raises(ble.BleBridgeError, match="connection/service discovery timed out"):
+        await radio.request("connect")
+    assert not radio.bridge.connected_addresses
+    assert radio.clients[0].operations == [("disconnect",)]
