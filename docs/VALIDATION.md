@@ -171,31 +171,3 @@ The 0.2.1 patch includes the dependency-licence directory in the repository
 patch, adds an early file-presence check before the CI Docker build, and
 updates the app/integration/Cargo versions. This does not imply that a physical
 HA OS install or Docker image build was executed in this environment.
-
-## 0.2.5 Bluetooth discovery patch (1 November 2026)
-
-- Source-only regression tests for the Home Assistant active-scan lifecycle:
-  **4 passed**. These use AST-extracted production coordinator methods and fake
-  Bluetooth APIs; they do not represent real radio testing.
-- Existing BLE transport tests against production `ble.py` with stubbed
-  Home Assistant and Bluetooth backends: **33 passed**.
-- Python syntax compilation and Git patch reverse-application checks passed.
-- Home Assistant 2026.6 and newer document `bluetooth.async_request_active_scan`,
-  so this call is supported by the documented 2026.10 minimum release.
-- Rust engine connection logic and stop protocol are unchanged; a 0.2.4
-  engine remains bridge-compatible with the 0.2.5 HACS integration.
-- NOT RUN: full Home Assistant/hassfest/HACS CI, Rust build/tests, Docker
-  installation, or tests with actual Bond and ESPHome hardware.
-
-## 0.2.6 HACS stability hotfix (1 November 2026)
-
-- Removed all automatic active-scan triggers introduced in 0.2.5; retained
-  explicit Search and regular advertisement callbacks.
-- Added direct coordinator regression checks: manual scan only, no active
-  scans on hello/enable/timer, concurrent manual scan suppression, obsolete
-  bridge epoch and cancellation handling.
-- No Rust or engine protocol modifications. A new engine Docker build is not
-  required for the HACS-only update.
-- Pending: actual Home Assistant/Core 2026.10.4, full GitHub CI, real ESPHome
-  proxies and We-Vibe Bond verification. If HA controls remain unavailable,
-  obtain Core traceback; the Engine log cannot identify HA setup failures.

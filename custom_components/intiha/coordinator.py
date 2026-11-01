@@ -105,7 +105,6 @@ class IntiHACoordinator:
         self._state_lock = asyncio.Lock()
         self._last_advertisement: dict[str, float] = {}
         self._scan_until = 0.0
-        self._active_scan_lock = asyncio.Lock()
         self._store = Store[dict[str, Any]](hass, 1, f"{DOMAIN}.{entry.entry_id}")
         self._cancel_timer: Callable[[], None] | None = None
         self.ble = BleBridge(
@@ -278,58 +277,11 @@ class IntiHACoordinator:
             self._last_advertisement.clear()
             for advertisement in self.ble.discovered():
                 await self._async_ble_event({**advertisement, "type": "advertisement"})
-            # The engine's scan command does not start a radio sweep. HA now
-            # defaults many ESPHome proxies to AUTO/passive; a wildcard
-            # Bluetooth callback alone does not request active scan responses.
-            self._spawn(
-                self._async_active_scan(self.bridge.epoch, seconds),
-                "requested active BLE scan",
-            )
         except BridgeError as err:
             self.scanning = False
             self._scan_until = 0
             self._notify()
             raise HomeAssistantError(self._safe_error(err)) from err
-
-    async def _async_active_scan(self, epoch: int, seconds: float) -> None:
-        """Perform only a user-requested active sweep through Home Assistant.
-
-        v0.2.5's automatic scans on bridge hello and every three minutes could
-        overlap active GATT connection and service discovery on Wi-Fi proxies.
-        A user can still explicitly request scan responses with Search.
-        Never run overlapping sweeps, or replay advertisements across epochs.
-        """
-        if self._active_scan_lock.locked():
-            return
-        async with self._active_scan_lock:
-            if (
-                self._shutdown
-                or not self.enabled
-                or not self.engine_connected
-                or epoch != self.bridge.epoch
-            ):
-                return
-            try:
-                await bluetooth.async_request_active_scan(
-                    self.hass, duration=min(float(seconds), 10.0)
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:
-                _LOGGER.warning(
-                    "IntiHA manual Bluetooth scan failed: %s",
-                    self._safe_error(err),
-                )
-                return
-            if (
-                self._shutdown
-                or not self.enabled
-                or not self.engine_connected
-                or epoch != self.bridge.epoch
-            ):
-                return
-            self._last_advertisement.clear()
-            await self._async_send_cached(epoch)
 
     async def async_stop_all(self) -> None:
         async with self._state_lock:

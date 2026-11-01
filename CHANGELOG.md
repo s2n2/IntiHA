@@ -1,44 +1,5 @@
 # Changelog
 
-## 0.2.6
-
-Stability rollback for the HACS integration after users reported unavailable
-entities, rapid bridge-session cycling and Bluetooth connection timeouts on
-0.2.5. This release does **not** claim to fix the remaining Bond GATT errors.
-
-- Disable v0.2.5's automatic bus-wide active Bluetooth scans on engine hello,
-  when enabling IntiHA, and in the 30-second timer. These could overlap
-  active proxy GATT connections and initialisation.
-- Restore passive/default Home Assistant advertisement-based automatic
-  discovery and reconnect behaviour from 0.2.4.
-- Keep explicit Search's on-demand active scan, while preventing overlapping
-  manual sweeps and suppressing late scans after an engine session changes.
-- Leave the Rust engine and BLE protocol unchanged. An installed v0.2.4/0.2.5
-  Engine app is compatible with the 0.2.6 HACS integration.
-- IMPORTANT: Greyed-out master controls mean the HA config entry is not
-  loaded or the frontend/Core is unavailable, rather than just a Bond GATT
-  failure. If that persists after a Core restart, inspect Home Assistant
-  Core setup errors; engine logs alone do not establish why.
-
-## 0.2.5
-
-Home Assistant Bluetooth discovery hotfix. The HACS integration is the only
-runtime component changed; the compatible Engine may remain on 0.2.4.
-
-- Search devices now requests a real Home Assistant on-demand active scan,
-  rather than only resending cached Bluetooth advertisements. This includes
-  ESPHome scanners left in Auto (passive) mode. The scan runs in the
-  background so the Search button does not block until it finishes.
-- Request one active sweep when IntiHA first connects or is re-enabled, and
-  refresh periodically at a bounded interval (every three minutes) while on.
-  Normal listening remains managed by Home Assistant; no separate BLE scanner.
-- Forward the updated advertisements after the sweep completes so newly
-  identifiable compatible devices can enter Buttplug's normal connection flow.
-- Keep GATT connections, stop verification, connection retries and disabled
-  controls unchanged. This does not claim to resolve the Bond's peer-terminated
-  connection: discovery and successful GATT setup are different stages.
-- Include active-scan regression checks; no physical hardware verification.
-
 ## 0.2.4
 
 Connection and stop-preparation revision. Update the HACS integration and

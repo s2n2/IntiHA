@@ -13,13 +13,11 @@ connects them to Home Assistant's Bluetooth network and provides the HA
 controls and sensors. Home Assistant Container users can run the same engine
 with Docker Compose.
 
-**Version 0.2.6 - stability rollback of automatic active scans.**
-Normal passive advertisement discovery and automatic reconnection remain on.
-Search still requests an active scan when you press it. The automatic sweeps
-added in 0.2.5 have been removed because they may overlap GATT operations on
-active ESPHome proxies. The Engine app can remain on 0.2.4 or 0.2.5; there
-is no bridge protocol change. Bond GATT reliability and physical room-to-room
-roaming are still unverified.
+**Version 0.2.4 - connection and stop-initialisation revision.** Update both
+components together. This patch passed 45 isolated Python transport tests
+with fake radio/HA imports. Its new Rust/Bond regression tests, full HA suite
+and Docker image still need to pass in GitHub Actions. Physical device and
+room-to-room coverage testing remains necessary.
 This is an independent project, not an official Intiface or Home Assistant
 product.
 
@@ -31,40 +29,12 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
-| **0.2.6** | Remove automatic Bluetooth scan sweeps introduced in 0.2.5; retain manual Search and automatic advertisement discovery; improve scan deduplication. HACS only. |
-| **0.2.5** | Make Search perform an actual HA Bluetooth active sweep; add bounded periodic discovery for devices not visible from passive advertisements. HACS-only runtime change; the 0.2.4 Engine is compatible. |
 | **0.2.4** | Separate driver stop-packet generation from real GATT verification; atomic write-and-cache acknowledgement; serialised connection attempts; useful connection-stage diagnostics. Update both HACS and the Engine app. |
 | **0.2.3** | Restore control for verified classic We-Vibe devices when the upstream stopped-state command produces no Bluetooth writes; retain stop-on-disconnect and add detailed diagnostics. |
 | **0.2.2** | Fix Docker installation without relying on a separately published `engine/licenses/` folder; collect upstream dependency licences during the Rust build. |
 | **0.2.1** | Fix IntiHA Engine app installation by including the full dependency-licence directory in the GitHub repository; add release-history visibility and build checks. No configuration changes. |
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
-
-## Updating from 0.2.5
-
-Install **IntiHA 0.2.6** through HACS and restart Home Assistant. The
-**IntiHA Engine app does not need an update**, and can remain on 0.2.4 or
-0.2.5. Engine protocol and Bluetooth stop handling are unchanged. Normal
-advertisements still discover supported devices automatically. If a device
-needs an active scan to reveal its services or name, use **Search devices**;
-IntiHA will not run active sweeps automatically while trying to establish
-continuous GATT connections.
-
-If all IntiHA controls and diagnostics show **unavailable**, first check
-Settings > Devices & services > IntiHA and Home Assistant **Core** logs for a
-config-entry or platform exception. Engine BLE errors alone should not make
-master controls unavailable. Only then investigate Bluetooth transport.
-
-## Updating from 0.2.4
-
-Install the **0.2.5 HACS integration** and restart Home Assistant. The Engine
-may remain on 0.2.4; its bridge protocol has not changed. The repo also bumps
-Engine packaging metadata to 0.2.5 for a consistent GitHub release, but
-rebuilding the Engine is **not required** for this discovery hotfix. Search
-now starts a real active sweep through Home Assistant's existing adapters.
-If a peripheral still does not appear, check whether it advertises in the
-Bluetooth network map and whether Buttplug supports its protocol. Discovery
-and connection are separate operations.
 
 ## Updating from 0.2.3
 
