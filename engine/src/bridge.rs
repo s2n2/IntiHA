@@ -75,6 +75,7 @@ pub struct Session {
     pub inflight: AtomicU64,
     pub classic_wevibe: bool,
     pub endpoints: RwLock<HashMap<Endpoint, String>>,
+    pub write_modes: RwLock<HashMap<String, bool>>,
     pub stop_recording: Mutex<Option<Vec<StopWrite>>>,
 }
 
@@ -91,6 +92,7 @@ impl Session {
             inflight: AtomicU64::new(0),
             classic_wevibe,
             endpoints: RwLock::new(HashMap::new()),
+            write_modes: RwLock::new(HashMap::new()),
             stop_recording: Mutex::new(None),
         }
     }

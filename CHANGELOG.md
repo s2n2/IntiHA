@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.3
+
+Device safe-stop compatibility and diagnostic hotfix.
+
+- Avoid rejecting recognised classic We-Vibe devices merely because Buttplug
+  suppresses a redundant stop command while all motor outputs are already zero.
+  If the upstream stop produces no GATT writes, send the documented 8-byte
+  motors-off packet to the verified We-Vibe control characteristic, wait for
+  the GATT write result, and cache it for subsequent emergency stops.
+- Keep the refusal and disconnect behaviour for devices without a verified
+  protocol-specific stop, failed writes, and lost Bluetooth connections.
+- Expose the actual stage of safe-stop failure rather than a generic message.
+- No changes to setup, tokens, discovery, or ESPHome proxy configuration.
+
 ## 0.2.2
 
 Engine installation hotfix.

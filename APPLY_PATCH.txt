@@ -1,23 +1,21 @@
-IntiHA v0.2.2 GitHub patch (based on v0.2.1)
+IntiHA v0.2.3 - Bond safe-stop hotfix
 
-Option 1: use the .patch file
-  git apply IntiHA-v0.2.2.patch
+Apply the contents of this ZIP at the ROOT of your GitHub repository
+https://github.com/s2n2/IntiHA (overwrite matching files).
+
+Or use the separate IntiHA-v0.2.3.patch from your repository root:
+
+  git apply IntiHA-v0.2.3.patch
   git add -A
-  git commit -m "Fix Docker install without host-side licenses directory"
+  git commit -m "Fix We-Vibe stopped-state initialization"
   git push
 
-Option 2: copy the changed files from this ZIP into the same paths
-of your s2n2/IntiHA GitHub checkout, overwriting existing files,
-then commit and push. Do not upload ZIP itself as an app store file.
+The v0.2.3 release number must be visible in the HA app store before
+installing the updated engine. Refresh the app store repository, then
+rebuild/reinstall IntiHA Engine as appropriate. Restart the engine app.
+The HACS integration metadata is also updated to v0.2.3.
 
-IMPORTANT: in engine/Dockerfile there must NOT be a line starting
-  COPY licenses
-Instead the Dockerfile gathers third-party licences from pinned
-Rust dependencies in the builder stage.
-
-In Home Assistant: Settings > Apps > App store > 3-dot menu > Check for updates
-(or reload repositories), then try installing IntiHA Engine v0.2.2.
-The GitHub Actions app-image build needs to pass on your repository.
-
-The package was statically checked and its licence-collection script was
-simulated. No full Docker build has been executed in this environment.
+The fix is restricted to recognized classic We-Vibe protocol devices with
+the known control characteristic. It does NOT bypass safety checks for
+unknown devices or prove real-Bond compatibility. See Last error if it
+still refuses control. Rust builds and real BLE testing are outstanding.

@@ -423,27 +423,96 @@ impl App {
                 })
                 .await
                 .unwrap_or(false);
-                let writes = session
+                let mut writes = session
                     .stop_recording
                     .lock()
                     .unwrap()
                     .take()
                     .unwrap_or_default();
+                let mut fallback_error = None;
+                // Buttplug can legitimately emit no GATT writes for StopDeviceCmd
+                // when its internal output state is already zero. The required
+                // cached safety stop still requires an awaited GATT write
+                // (including a response acknowledgement where supported).
+                // Only the verified classic We-Vibe profile permits the
+                // explicit all-motors-off packet below. All other devices
+                // remain unavailable until a real stop has been captured.
+                if stop.is_ok()
+                    && settled
+                    && session.connected.load(Ordering::SeqCst)
+                    && writes.is_empty()
+                {
+                    if let Some(write) = crate::hardware::classic_wevibe_stop_write(&session) {
+                        let result = self
+                            .bridge
+                            .rpc(
+                                json!({
+                                    "op":"write", "address":address, "connection_id":session.id,
+                                    "characteristic":write.characteristic, "data":write.data,
+                                    "response":write.response
+                                }),
+                                Duration::from_secs(12),
+                            )
+                            .await;
+                        match result {
+                            Ok(_) => writes.push(write),
+                            Err(error) => fallback_error = Some(error.to_string()),
+                        }
+                    } else {
+                        fallback_error = Some(
+                            "No verified stop packet exists for the connected GATT profile".into(),
+                        );
+                    }
+                }
                 if stop.is_ok()
                     && settled
                     && session.connected.load(Ordering::SeqCst)
                     && !writes.is_empty()
                     && writes.len() <= 16
                 {
-                    let plan = self.bridge.rpc(json!({"op":"set_stop_plan","address":address,"connection_id":session.id,"writes":writes}), Duration::from_secs(12)).await;
-                    if plan.is_err() || !self.bridge.mark_ready(&session) {
+                    let plan = self
+                        .bridge
+                        .rpc(
+                            json!({"op":"set_stop_plan","address":address,"connection_id":session.id,"writes":writes}),
+                            Duration::from_secs(12),
+                        )
+                        .await;
+                    if let Err(error) = plan {
+                        *self.bridge.last_error.lock().unwrap() =
+                            Some(format!("Could not install verified stop plan: {error}"));
+                        let _ = self.bridge.send(self.bridge.status()).await;
                         let _ = self.bridge.disconnect_session(&session).await;
+                    } else if !self.bridge.mark_ready(&session) {
+                        *self.bridge.last_error.lock().unwrap() =
+                            Some("BLE session expired while enabling safe controls".into());
+                        let _ = self.bridge.send(self.bridge.status()).await;
+                        let _ = self.bridge.disconnect_session(&session).await;
+                    } else {
+                        // Clear this obsolete error after a successful recovery.
+                        let mut last_error = self.bridge.last_error.lock().unwrap();
+                        if last_error.as_ref().is_some_and(|v| {
+                            v.contains("stop command")
+                                || v.contains("stop plan")
+                                || v.starts_with("Safe stop unavailable")
+                        }) {
+                            *last_error = None;
+                        }
                     }
                 } else {
-                    *self.bridge.last_error.lock().unwrap() = Some(
-                        "A device could not establish a reusable stop command; control was refused"
-                            .into(),
-                    );
+                    let reason = if let Err(error) = stop {
+                        format!("upstream StopDeviceCmd failed: {error}")
+                    } else if !settled {
+                        "stop operation did not settle within 15 seconds".into()
+                    } else if !session.connected.load(Ordering::SeqCst) {
+                        "Bluetooth link dropped during stop preparation".into()
+                    } else if writes.len() > 16 {
+                        "stop required more than 16 GATT writes".into()
+                    } else {
+                        fallback_error
+                            .unwrap_or_else(|| "upstream stop produced no GATT writes".into())
+                    };
+                    *self.bridge.last_error.lock().unwrap() =
+                        Some(format!("Safe stop unavailable: {reason}; control refused"));
                     let _ = self.bridge.send(self.bridge.status()).await;
                     let _ = self.bridge.disconnect_session(&session).await;
                 }

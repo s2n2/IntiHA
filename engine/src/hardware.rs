@@ -77,6 +77,8 @@ impl fmt::Debug for HaConnector {
 #[derive(Deserialize)]
 struct GattCharacteristic {
     uuid: Uuid,
+    #[serde(default)]
+    properties: Vec<String>,
 }
 #[derive(Deserialize)]
 struct GattService {
@@ -184,11 +186,27 @@ impl HardwareSpecializer for HaSpecializer {
             return Err(device_error("No Bluetooth service mapping for this device"));
         };
         let mut endpoints = HashMap::new();
+        let mut write_modes = HashMap::new();
         for (service_uuid, characteristic_map) in specifier.services() {
             if let Some(service) = self.services.iter().find(|s| s.uuid == *service_uuid) {
                 for (endpoint, uuid) in characteristic_map {
-                    if service.characteristics.iter().any(|c| c.uuid == *uuid) {
+                    if let Some(characteristic) = service
+                        .characteristics
+                        .iter()
+                        .find(|c| c.uuid == *uuid)
+                    {
                         endpoints.insert(*endpoint, uuid.to_string());
+                        // The real GATT characteristic determines which write mode
+                        // can be used for a verified emergency-stop fallback.
+                        if characteristic.properties.iter().any(|p| p == "write") {
+                            write_modes.insert(uuid.to_string(), true);
+                        } else if characteristic
+                            .properties
+                            .iter()
+                            .any(|p| p == "write-without-response")
+                        {
+                            write_modes.insert(uuid.to_string(), false);
+                        }
                     }
                 }
             }
@@ -201,6 +219,7 @@ impl HardwareSpecializer for HaSpecializer {
         }
         let endpoint_list: Vec<_> = endpoints.keys().copied().collect();
         *self.session.endpoints.write().unwrap() = endpoints;
+        *self.session.write_modes.write().unwrap() = write_modes;
         Ok(Hardware::new(
             &self.name,
             &self.session.address,
@@ -274,6 +293,34 @@ impl HaHardware {
     }
 }
 
+// The official classic We-Vibe BLE profile has a fixed 8-byte motor-off
+// command on this exact characteristic. Do not extrapolate this to other
+// devices or other BLE control endpoints.
+const CLASSIC_WEVIBE_TX: &str = "f000c000-0451-4000-b000-000000000000";
+const CLASSIC_WEVIBE_MOTORS_OFF: [u8; 8] = [0x0f, 0, 0, 0, 0, 0, 0, 0];
+
+/// Return a protocol-verified stop for classic We-Vibe devices only.
+/// A connected BLE characteristic and supported write mode are mandatory;
+/// there is no generic guessed-byte fallback for unknown protocols.
+pub(crate) fn classic_wevibe_stop_write(session: &Session) -> Option<StopWrite> {
+    if !session.classic_wevibe {
+        return None;
+    }
+    let endpoints = session.endpoints.read().unwrap();
+    if !endpoints
+        .values()
+        .any(|uuid| uuid.eq_ignore_ascii_case(CLASSIC_WEVIBE_TX))
+    {
+        return None;
+    }
+    let response = *session.write_modes.read().unwrap().get(CLASSIC_WEVIBE_TX)?;
+    Some(StopWrite {
+        characteristic: CLASSIC_WEVIBE_TX.into(),
+        data: CLASSIC_WEVIBE_MOTORS_OFF.to_vec(),
+        response,
+    })
+}
+
 /// Classic We-Vibe's upstream initialiser briefly requests both motors at 9.
 /// Replace only that exact first initialisation write with its documented stop.
 pub fn safe_initial_write(
@@ -284,10 +331,10 @@ pub fn safe_initial_write(
 ) -> Vec<u8> {
     if first
         && classic_wevibe
-        && characteristic.eq_ignore_ascii_case("f000c000-0451-4000-b000-000000000000")
+        && characteristic.eq_ignore_ascii_case(CLASSIC_WEVIBE_TX)
         && data == [0x0f, 0x03, 0x00, 0x99, 0x00, 0x03, 0x00, 0x00]
     {
-        vec![0x0f, 0, 0, 0, 0, 0, 0, 0]
+        CLASSIC_WEVIBE_MOTORS_OFF.to_vec()
     } else {
         data.to_vec()
     }
@@ -378,6 +425,46 @@ impl HardwareInternal for HaHardware {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stop_fallback_requires_verified_protocol_endpoint_and_write_mode() {
+        use buttplug_server_device_config::Endpoint;
+        let session = Session::new("AA:BB:CC:DD:EE:01", "test", true);
+        assert!(classic_wevibe_stop_write(&session).is_none());
+        session
+            .endpoints
+            .write()
+            .unwrap()
+            .insert(Endpoint::Tx, CLASSIC_WEVIBE_TX.into());
+        assert!(classic_wevibe_stop_write(&session).is_none());
+        session
+            .write_modes
+            .write()
+            .unwrap()
+            .insert(CLASSIC_WEVIBE_TX.into(), true);
+        let stop = classic_wevibe_stop_write(&session).unwrap();
+        assert_eq!(stop.data, vec![15, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(stop.characteristic, CLASSIC_WEVIBE_TX);
+        assert!(stop.response);
+        let unrelated = Session::new("AA:BB:CC:DD:EE:02", "test-other", false);
+        unrelated
+            .endpoints
+            .write()
+            .unwrap()
+            .insert(Endpoint::Tx, CLASSIC_WEVIBE_TX.into());
+        unrelated
+            .write_modes
+            .write()
+            .unwrap()
+            .insert(CLASSIC_WEVIBE_TX.into(), true);
+        assert!(classic_wevibe_stop_write(&unrelated).is_none());
+        session
+            .write_modes
+            .write()
+            .unwrap()
+            .insert(CLASSIC_WEVIBE_TX.into(), false);
+        assert!(!classic_wevibe_stop_write(&session).unwrap().response);
+    }
+
     #[test]
     fn suppresses_only_classic_wevibe_initialisation_pulse() {
         let pulse = [15, 3, 0, 153, 0, 3, 0, 0];
