@@ -1,0 +1,13 @@
+configuration:
+  client_token:
+    name: Client token
+    description: A random secret of 32 to 256 visible ASCII characters without spaces. Use a different secret from the bridge token; 64 hexadecimal characters is recommended.
+  bridge_token:
+    name: Bridge token
+    description: A random secret of 32 to 256 visible ASCII characters without spaces. Enter the same bridge token in the IntiHA integration; 64 hexadecimal characters is recommended.
+  log_level:
+    name: Log level
+    description: Use info normally. Debug may expose device identifiers in logs.
+network:
+  12345/tcp: Buttplug clients (client token required)
+  12346/tcp: Home Assistant Bluetooth bridge (bridge token required)

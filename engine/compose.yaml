@@ -1,0 +1,24 @@
+# Standalone alternative for Home Assistant Container installations.
+# Create .env with distinct, random INTIHA_CLIENT_TOKEN and INTIHA_BRIDGE_TOKEN
+# values of at least 32 characters. Do not commit .env.
+services:
+  intiha-engine:
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    ports:
+      - "12345:12345"
+      - "12346:12346"
+    environment:
+      INTIHA_CLIENT_TOKEN: "${INTIHA_CLIENT_TOKEN:?Set INTIHA_CLIENT_TOKEN in .env}"
+      INTIHA_BRIDGE_TOKEN: "${INTIHA_BRIDGE_TOKEN:?Set INTIHA_BRIDGE_TOKEN in .env}"
+      INTIHA_LOG_LEVEL: info
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    stop_grace_period: 20s

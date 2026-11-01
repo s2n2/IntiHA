@@ -1,0 +1,325 @@
+//! Real TCP/WebSocket tests with the official engine and a fake HA GATT peer.
+//! No physical radio is simulated as evidence of hardware compatibility.
+use futures::{SinkExt, StreamExt};
+use intiha_engine::server::{App, Config};
+use serde_json::{Value, json};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, atomic::Ordering},
+    time::{Duration, Instant},
+};
+use tokio::{
+    net::TcpListener,
+    sync::{broadcast, mpsc},
+    task::JoinHandle,
+};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
+
+const ADDRESS: &str = "AA:BB:CC:DD:EE:01";
+const TX: &str = "f000c000-0451-4000-b000-000000000000";
+const RX: &str = "f000b000-0451-4000-b000-000000000000";
+
+struct Harness {
+    app: Arc<App>,
+    client_url: String,
+    commands: mpsc::Sender<Value>,
+    events: broadcast::Sender<Value>,
+    writes: Arc<Mutex<Vec<Value>>>,
+    tasks: Vec<JoinHandle<()>>,
+}
+impl Harness {
+    async fn start() -> Self {
+        let config = Config {
+            bridge_token: "bridge_".to_owned() + &"a".repeat(32),
+            client_token: "client_".to_owned() + &"b".repeat(32),
+            bind: "127.0.0.1".into(),
+            client_port: 0,
+            bridge_port: 0,
+        };
+        let app = App::new(config.clone()).await.unwrap();
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bridge_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_url = format!(
+            "ws://{}/?token={}",
+            client_listener.local_addr().unwrap(),
+            config.client_token
+        );
+        let bridge_url = format!("ws://{}/bridge", bridge_listener.local_addr().unwrap());
+        let a = app.clone();
+        let b = app.clone();
+        let c = app.clone();
+        let tasks = vec![
+            tokio::spawn(async move {
+                axum::serve(client_listener, a.client_router())
+                    .await
+                    .unwrap();
+            }),
+            tokio::spawn(async move {
+                axum::serve(bridge_listener, b.bridge_router())
+                    .await
+                    .unwrap();
+            }),
+            tokio::spawn(async move {
+                c.supervise().await;
+            }),
+        ];
+        let mut request = bridge_url.into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {}", config.bridge_token).parse().unwrap(),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket.send(Message::Text(json!({"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true,"selected_addresses":[ADDRESS]}).to_string().into())).await.unwrap();
+        let (commands, mut command_rx) = mpsc::channel::<Value>(32);
+        let (events, _) = broadcast::channel::<Value>(128);
+        let event_sender = events.clone();
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let captured = writes.clone();
+        let task = tokio::spawn(async move {
+            let mut stop_plans = HashMap::<String, Vec<Value>>::new();
+            loop {
+                tokio::select! {
+                    command = command_rx.recv() => {
+                        let Some(command) = command else { break; };
+                        if socket.send(Message::Text(command.to_string().into())).await.is_err() { break; }
+                    }
+                    incoming = socket.next() => {
+                        let Some(Ok(message)) = incoming else { break; };
+                        match message {
+                            Message::Text(text) => {
+                                let value: Value = serde_json::from_str(&text).unwrap();
+                                let _ = event_sender.send(value.clone());
+                                if value["type"] != "request" { continue; }
+                                let result = match value["op"].as_str().unwrap() {
+                                    "connect" => json!({"services":[{"uuid":"f000bb03-0451-4000-b000-000000000000","characteristics":[{"uuid":TX,"handle":1,"properties":["write"]},{"uuid":RX,"handle":2,"properties":["notify","read"]}]}]}),
+                                    "read" => json!({"data":[100]}),
+                                    "write" => { captured.lock().unwrap().push(value.clone()); json!({}) }
+                                    "set_stop_plan" => {
+                                        let writes=value["writes"].as_array().unwrap().clone(); assert!(!writes.is_empty());
+                                        stop_plans.insert(value["connection_id"].as_str().unwrap().to_owned(),writes); json!({})
+                                    }
+                                    "disconnect" => {
+                                        if let Some(plan)=stop_plans.remove(value["connection_id"].as_str().unwrap()) { captured.lock().unwrap().extend(plan); }
+                                        json!({})
+                                    }
+                                    "scan"|"subscribe"|"unsubscribe" => json!({}),
+                                    other => panic!("Unexpected operation {other}"),
+                                };
+                                if socket.send(Message::Text(json!({"type":"response","id":value["id"],"ok":true,"result":result}).to_string().into())).await.is_err() { break; }
+                            }
+                            Message::Ping(data) => { let _ = socket.send(Message::Pong(data)).await; }
+                            Message::Close(_) => break,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        });
+        let mut h = Self {
+            app,
+            client_url,
+            commands,
+            events,
+            writes,
+            tasks,
+        };
+        h.tasks.push(task);
+        h
+    }
+    async fn send(&self, value: Value) {
+        self.commands.send(value).await.unwrap();
+    }
+    async fn wait(
+        rx: &mut broadcast::Receiver<Value>,
+        predicate: impl Fn(&Value) -> bool,
+    ) -> Value {
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let value = rx.recv().await.unwrap();
+                if predicate(&value) {
+                    return value;
+                }
+            }
+        })
+        .await
+        .expect("Expected bridge event before timeout")
+    }
+    async fn ready(&self) -> Value {
+        let mut events = self.events.subscribe();
+        self.send(json!({"type":"advertisement","address":ADDRESS,"name":"Rave","service_uuids":[],"manufacturer_data":{},"rssi":-45,"source":"mock-proxy"})).await;
+        Self::wait(&mut events, |v| {
+            v["type"] == "devices" && v["devices"][0]["ready"] == true
+        })
+        .await["devices"][0]
+            .clone()
+    }
+    async fn admin(&self, mut value: Value) -> Value {
+        let mut events = self.events.subscribe();
+        value["type"] = "admin".into();
+        value["id"] = 99.into();
+        self.send(value).await;
+        Self::wait(&mut events, |v| {
+            v["type"] == "admin_result" && v["id"] == 99
+        })
+        .await
+    }
+    async fn finish(self) {
+        self.app.shutdown().await;
+        for task in self.tasks {
+            task.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn real_engine_uses_gatt_stop_plan_and_never_pulses_on_connect() {
+    let h = Harness::start().await;
+    let device = h.ready().await;
+    assert_eq!(device["DeviceName"], "WeVibe Rave");
+    assert_eq!(device["address"], ADDRESS);
+    let writes = h.writes.lock().unwrap().clone();
+    assert!(
+        writes.len() >= 3,
+        "Initialise twice and capture official stop"
+    );
+    assert!(
+        writes
+            .iter()
+            .all(|v| v["data"] == json!([15, 0, 0, 0, 0, 0, 0, 0])),
+        "No motor pulse on connection"
+    );
+    let command=h.admin(json!({"op":"command","connection_id":device["connection_id"],"message":{"ScalarCmd":{"Id":2,"DeviceIndex":device["DeviceIndex"],"Scalars":[{"Index":0,"Scalar":0.5,"ActuatorType":"Vibrate"}]}}})).await;
+    assert_eq!(command["ok"], true, "{command}");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if h.writes
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|v| v["data"] == json!([15, 3, 0, 136, 0, 3, 0, 0]))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Official scalar command must reach GATT");
+    // Exercise the manual dead-man independently of long discovery operations.
+    *h.app.bridge.manual_deadline.lock().unwrap() = Some(Instant::now() - Duration::from_secs(1));
+    let mut events = h.events.subscribe();
+    Harness::wait(&mut events, |v| v["type"] == "output_clear").await;
+    assert_eq!(
+        h.writes.lock().unwrap().last().unwrap()["data"],
+        json!([15, 0, 0, 0, 0, 0, 0, 0])
+    );
+    h.finish().await;
+}
+
+#[tokio::test]
+async fn official_v3_and_v4_clients_authenticate_and_have_exclusive_control() {
+    let h = Harness::start().await;
+    let device = h.ready().await;
+    let no_token = h.client_url.split('?').next().unwrap();
+    assert!(connect_async(no_token).await.is_err());
+    for version in [3, 4] {
+        let (mut socket, _) = connect_async(&h.client_url).await.unwrap();
+        let handshake = if version == 3 {
+            json!({"RequestServerInfo":{"Id":1,"ClientName":"Integration test","MessageVersion":3}})
+        } else {
+            json!({"RequestServerInfo":{"Id":1,"ClientName":"Integration test","ProtocolVersionMajor":4,"ProtocolVersionMinor":0}})
+        };
+        socket
+            .send(Message::Text(json!([handshake]).to_string().into()))
+            .await
+            .unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match socket.next().await.unwrap().unwrap() {
+                    Message::Text(t) => break serde_json::from_str::<Value>(&t).unwrap(),
+                    Message::Ping(v) => socket.send(Message::Pong(v)).await.unwrap(),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(response[0].get("ServerInfo").is_some(), "{response}");
+        assert!(
+            connect_async(&h.client_url).await.is_err(),
+            "A second controller must be refused"
+        );
+        let blocked=h.admin(json!({"op":"command","message":{"ScalarCmd":{"Id":2,"DeviceIndex":device["DeviceIndex"],"Scalars":[{"Index":0,"Scalar":1.0,"ActuatorType":"Vibrate"}]}}})).await;
+        assert_eq!(blocked["ok"], false);
+        let mut events = h.events.subscribe();
+        socket.close(None).await.unwrap();
+        Harness::wait(&mut events, |v| {
+            v["type"] == "status" && v["client_connected"] == false
+        })
+        .await;
+    }
+    h.finish().await;
+}
+
+#[tokio::test]
+async fn reconnect_uses_new_session_and_keeps_output_stopped() {
+    let h = Harness::start().await;
+    let first = h.ready().await;
+    let old = first["connection_id"].clone();
+    h.send(
+        json!({"type":"disconnected","address":ADDRESS,"connection_id":old,"reason":"proxy lost"}),
+    )
+    .await;
+    let second = h.ready().await;
+    assert_ne!(second["connection_id"], old);
+    assert_eq!(
+        second["DeviceIndex"], first["DeviceIndex"],
+        "The regression exercises a reused public index"
+    );
+    let stale = h.admin(json!({"op":"command","connection_id":old,"message":{"ScalarCmd":{"Id":3,"DeviceIndex":second["DeviceIndex"],"Scalars":[{"Index":0,"Scalar":0.75,"ActuatorType":"Vibrate"}]}}})).await;
+    assert_eq!(stale["ok"], false);
+    assert!(
+        stale["error"]
+            .as_str()
+            .unwrap()
+            .contains("connection changed")
+    );
+    h.send(json!({"type":"disconnected","address":ADDRESS,"connection_id":old,"reason":"late stale callback"})).await;
+    let state = h.admin(json!({"op":"status"})).await;
+    assert_eq!(state["ok"], true);
+    assert!(
+        h.app
+            .bridge
+            .session(second["connection_id"].as_str().unwrap())
+            .unwrap()
+            .connected
+            .load(Ordering::SeqCst)
+    );
+    assert!(
+        h.writes
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|v| v["data"] == json!([15, 0, 0, 0, 0, 0, 0, 0]))
+    );
+    h.finish().await;
+}
+
+#[tokio::test]
+async fn unselected_devices_are_discovered_without_connecting() {
+    let h = Harness::start().await;
+    let mut events = h.events.subscribe();
+    let other = "AA:BB:CC:DD:EE:02";
+    h.send(json!({"type":"advertisement","address":other,"name":"Rave","service_uuids":[],"manufacturer_data":{}})).await;
+    Harness::wait(&mut events, |v| {
+        v["type"] == "discovered" && v["address"] == other
+    })
+    .await;
+    h.app.bridge.discover_due().await;
+    assert!(h.app.bridge.session_for(other).is_none());
+    assert!(h.writes.lock().unwrap().is_empty());
+    h.finish().await;
+}
