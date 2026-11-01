@@ -1,4 +1,4 @@
-# Validation record: IntiHA 0.1.0
+# Validation record: IntiHA 0.2.0
 
 Date: 1 November 2026.
 
@@ -24,15 +24,17 @@ were accessible in the development environment.
 
 | Check | Result |
 |---|---|
-| Complete Python test suite, including mandatory system tests | **84 passed** |
-| Rust unit/regression tests | **11 passed** |
+| Complete Python test suite, including mandatory system tests | **108 passed** |
+| Rust unit/regression tests | **15 passed** |
 | Rust real TCP/WebSocket integration tests | **4 passed** |
 | Ruff checks and formatting | Passed |
 | Cargo formatting and clippy with warnings denied | Passed |
 | Home Assistant 2026.10.4 hassfest | **23 validation plugins; 1 integration; 0 invalid; no warnings** |
 | Official HACS manifest schemas | Passed |
 | Project JSON/YAML/TOML parsing and version consistency | Passed |
-| App startup shell syntax and invalid-credential cases | Passed |
+| Actual app entrypoint with a simulated Supervisor | **3 passed** (included in the Python total) |
+| Supervisor discovery / simplified configuration flows | **27 passed** (included in the Python total) |
+| App startup shell syntax | Passed |
 
 The final Python suite was run with `INTIHA_REQUIRE_SYSTEM_TESTS=1` so a missing
 engine executable would fail the gate. Home Assistant's checks for leftover
@@ -48,11 +50,15 @@ authenticated GitHub metadata access.
 
 These tests launch the actual compiled Rust engine as a separate process,
 load the real integration and entity platforms in Home Assistant, use the
-actual authenticated WebSocket bridge, and simulate only the BLE radio.
+actual tokenless WebSocket bridge, and simulate only the BLE radio.
 
-- An upstream WeVibe Nova profile is recognised and two real HA vibration
-  entities are created. A real HA number service call produces the expected
+- An upstream WeVibe Nova profile is recognised automatically on a fresh
+  installation, without tokens, device selection, Search or turning the master
+  switch on manually. Two real HA vibration entities are created. A real HA number service call produces the expected
   characteristic writes.
+- A second device powered on after startup connects automatically. All its
+  sensors, stop button and supported vibration entities appear without a
+  reload, while the first device remains connected.
 - The classic We-Vibe initialisation pulse is replaced with a stop packet.
   The official driver's stop writes are captured and installed in HA before
   the device is marked ready.
@@ -60,7 +66,7 @@ actual authenticated WebSocket bridge, and simulate only the BLE radio.
   Restarting reconnects with a new connection ID and does not replay output.
 - Failed stop writes propagate across the real engine/bridge boundary and
   leave the unconfirmed-stop status visible.
-- The actual external Buttplug v3 handshake, authentication, one-controller
+- The actual external Buttplug v3 handshake without credentials, one-controller
   restriction and exclusion of competing HA movement work together.
 
 The Rust integration tests additionally exercise v4 negotiation and verify
@@ -70,7 +76,8 @@ external controller's session before it can target the new connection.
 
 ## Failure and cleanup coverage
 
-Tests cover device approval/revocation, per-device serialisation, bounded
+Tests cover compatible-device recognition, continuous discovery, live entity
+creation and deduplication, saved master-off state, per-device serialisation, bounded
 requests, cancelled connects, stale BLE notifications/disconnects, writes
 queued behind a failure, notification overflow, stop-before-disconnect order,
 independent manual timeout, uncertain stops surviving an empty inventory or
@@ -79,7 +86,24 @@ restart, and local off/stop enforcement before a stalled engine reply.
 WebSocket regressions cover shutdown during a handshake, simultaneous
 reconnect/close, closing from a receiver callback and cancellation while
 socket cleanup is already underway. These checks found and resolved a real
-heartbeat-timer leak before packaging.
+heartbeat-timer leak before the initial release. The 0.2.0 regressions also
+verify that an admin request waiting for the send lock cannot cross a
+reconnection, even if the old pending response has already failed. Discovery
+during an awaited battery read does not interrupt polling. Successful device
+readiness resets reconnect failure backoff; a stale ready result cannot revive
+a retired session.
+
+## App discovery validation
+
+The actual shell entrypoint is tested against a simulated Supervisor and
+engine process. Checks cover startup without configuration, the app hostname
+announcement, retry during Supervisor startup, preservation of engine exit
+status, and shutdown of the discovery worker and engine. The built-in
+Supervisor credential is not exposed to the engine, command arguments or logs.
+HA configuration-flow tests use the real flow manager, including Supervisor
+discovery and manual discovery lookup. A live HA OS installation was not
+available. The standalone Supervisor app-schema validator was not run
+successfully because its isolated environment lacked `aiodocker`.
 
 ## Checks still needed after publication
 

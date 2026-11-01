@@ -67,5 +67,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: IntiHAConfigEntry) -> b
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: IntiHAConfigEntry) -> bool:
+    """Remove obsolete setup fields when upgrading to automatic discovery."""
+    if entry.version > 2:
+        return False
+    if entry.version == 1:
+        obsolete = {"bridge_token", "client_token", "selected_devices"}
+        hass.config_entries.async_update_entry(
+            entry,
+            data={key: value for key, value in entry.data.items() if key not in obsolete},
+            options={key: value for key, value in entry.options.items() if key not in obsolete},
+            version=2,
+        )
+    return True
+
+
 async def _async_options_updated(hass: HomeAssistant, entry: IntiHAConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)

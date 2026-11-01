@@ -3,7 +3,7 @@
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 from homeassistant.helpers.entity import EntityCategory
 
-from .entity import IntiHAEntity
+from .entity import IntiHAEntity, async_add_discovered_entities
 
 PARALLEL_UPDATES = 0
 
@@ -14,11 +14,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
         IntiHABinarySensor(coordinator, key)
         for key in ("engine_connected", "client_connected", "scanning", "stop_unconfirmed")
     ]
-    entities.extend(
-        IntiHABinarySensor(coordinator, "connected", address)
-        for address in sorted(coordinator.selected)
-    )
     async_add_entities(entities)
+    async_add_discovered_entities(
+        coordinator,
+        entry,
+        async_add_entities,
+        lambda address: [IntiHABinarySensor(coordinator, "connected", address)],
+    )
 
 
 class IntiHABinarySensor(IntiHAEntity, BinarySensorEntity):

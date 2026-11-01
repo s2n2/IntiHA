@@ -67,8 +67,8 @@ class BleBridge:
 
     ``is_allowed`` is checked at execution time, including after a slow
     connection. ``emit`` receives JSON-compatible dictionaries. Discovery is
-    intentionally unfiltered here: the coordinator decides what to expose
-    during a user-requested scan.
+    intentionally unfiltered here: the official engine identifies supported
+    devices before the coordinator admits their Bluetooth connections.
     """
 
     def __init__(
@@ -200,8 +200,8 @@ class BleBridge:
         if not self._running or self._resetting:
             raise BleBridgeError("Bluetooth bridge is disabled or resetting")
         if op != "disconnect" and not self._is_allowed(address):
-            raise BleBridgeError("Device is not approved for this integration")
-        # Do not allocate locks for arbitrary unapproved addresses.
+            raise BleBridgeError("Device has not been identified as compatible")
+        # Do not allocate locks for arbitrary unrecognised peripherals.
         if op == "disconnect" and address not in self._connections:
             return {}
         epoch = self._epoch
@@ -224,7 +224,7 @@ class BleBridge:
             if not self._running or self._resetting or self._epoch != epoch:
                 raise BleBridgeError("BLE operation belongs to an expired bridge session")
             if op != "disconnect" and not self._is_allowed(address):
-                raise BleBridgeError("Device approval has been removed")
+                raise BleBridgeError("Device is no longer available to this integration")
             if op == "connect":
                 return await self._connect(address, connection_id, epoch)
             connection = self._connections.get(address)

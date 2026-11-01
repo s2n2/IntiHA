@@ -4,7 +4,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import PERCENTAGE, SIGNAL_STRENGTH_DECIBELS_MILLIWATT
 from homeassistant.helpers.entity import EntityCategory
 
-from .entity import IntiHAEntity
+from .entity import IntiHAEntity, async_add_discovered_entities
 
 PARALLEL_UPDATES = 0
 
@@ -23,8 +23,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
             "last_error",
         )
     ]
-    for address in sorted(coordinator.selected):
-        entities.extend(
+    async_add_entities(entities)
+    async_add_discovered_entities(
+        coordinator,
+        entry,
+        async_add_entities,
+        lambda address: (
             IntiHASensor(coordinator, key, address)
             for key in (
                 "device_status",
@@ -33,8 +37,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 "last_seen_via",
                 "last_seen",
             )
-        )
-    async_add_entities(entities)
+        ),
+    )
 
 
 class IntiHASensor(IntiHAEntity, SensorEntity):

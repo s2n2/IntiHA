@@ -13,9 +13,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.intiha.bridge import BridgeError
 from custom_components.intiha.const import (
     CONF_AUTO_RECONNECT,
-    CONF_BRIDGE_TOKEN,
     CONF_CONTROL_TIMEOUT,
-    CONF_DEVICES,
     CONF_ENGINE_URL,
     CONF_SCAN_DURATION,
     DOMAIN,
@@ -59,8 +57,6 @@ async def coordinator(hass):
         title="IntiHA",
         data={
             CONF_ENGINE_URL: "ws://engine.example:12346/bridge",
-            CONF_BRIDGE_TOKEN: "b" * 64,
-            CONF_DEVICES: [ADDRESS, OTHER_ADDRESS],
             CONF_AUTO_RECONNECT: True,
             CONF_CONTROL_TIMEOUT: 60,
             CONF_SCAN_DURATION: 30,
@@ -91,9 +87,11 @@ async def coordinator(hass):
     return value
 
 
-async def test_initialise_offline_requires_no_engine_and_starts_disabled(coordinator):
+async def test_initialise_offline_requires_no_engine_and_starts_enabled(coordinator):
     await coordinator.async_initialize()
-    assert coordinator.status == "disabled"
+    assert coordinator.enabled
+    assert coordinator.status == "connecting"
+    assert not coordinator.devices
     assert not coordinator.engine_connected
     coordinator.ble.async_start.assert_awaited_once()
     coordinator.bridge.request.assert_not_awaited()
@@ -215,7 +213,6 @@ async def test_enabling_configures_only_and_never_replays_prior_output(coordinat
         "configure",
         enabled=True,
         auto_reconnect=True,
-        selected_addresses=[ADDRESS, OTHER_ADDRESS],
         manual_timeout_seconds=60,
     )
     settings = coordinator._hello()
@@ -506,9 +503,110 @@ async def test_invalid_percentages_never_reach_engine(coordinator):
     coordinator.bridge.request.assert_not_awaited()
 
 
-async def test_network_error_redacts_bridge_token_and_url(coordinator):
-    token = coordinator.config[CONF_BRIDGE_TOKEN]
-    message = coordinator._safe_error(f"Failed {token} at ws://host/bridge?token=secret")
-    assert token not in message
-    assert "token=secret" not in message
+async def test_network_error_redacts_engine_url(coordinator):
+    message = coordinator._safe_error("Failed at ws://private-engine/bridge")
+    assert "private-engine" not in message
     assert "[engine]" in message
+
+
+async def test_compatible_discovery_adds_and_persists_device_without_selection(coordinator):
+    coordinator.engine_connected = True
+    assert not coordinator.devices
+    listener = Mock()
+    coordinator.add_listener(listener)
+
+    await coordinator._async_engine_message(
+        {"type": "discovered", "address": ADDRESS, "name": "Nova", "protocols": ["wevibe"]},
+        coordinator.bridge.epoch,
+    )
+
+    assert coordinator.devices[ADDRESS].name == "Nova"
+    assert not coordinator.devices[ADDRESS].connected
+    assert coordinator._persisted_state()["devices"][ADDRESS]["name"] == "Nova"
+    assert "selected_addresses" not in coordinator._hello()
+    listener.assert_called_once()
+    coordinator._store.async_delay_save.assert_called_once()
+
+    coordinator._update_devices([device_description()])
+    await coordinator._async_engine_message(
+        {"type": "discovered", "address": ADDRESS, "name": "advertising name"},
+        coordinator.bridge.epoch,
+    )
+    assert coordinator.devices[ADDRESS].name == "Test device"
+    assert len(coordinator.devices) == 1
+
+
+async def test_continuous_discovery_forwards_new_advertisements_without_search(coordinator):
+    coordinator.engine_connected = True
+    assert coordinator._scan_until == 0
+    advertisement = {"type": "advertisement", "address": ADDRESS, "name": "Nova"}
+
+    await coordinator._async_ble_event(advertisement)
+
+    coordinator.bridge.send.assert_awaited_once_with(advertisement, epoch=coordinator.bridge.epoch)
+    # An advertisement alone does not claim protocol compatibility. The
+    # engine sends `discovered` only after the official profiles match it.
+    assert not coordinator.devices
+
+
+async def test_persisted_off_prevents_automatic_discovery_after_restart(coordinator):
+    coordinator._store.async_load.return_value = {"enabled": False}
+    await coordinator.async_initialize()
+    coordinator.engine_connected = True
+
+    await coordinator._async_ble_event({"type": "advertisement", "address": ADDRESS})
+
+    assert not coordinator.enabled
+    coordinator.bridge.send.assert_not_awaited()
+
+
+async def test_rotating_advertisers_do_not_permanently_block_new_devices(coordinator):
+    coordinator.engine_connected = True
+    coordinator._last_advertisement = {
+        f"00:00:00:00:{index // 256:02X}:{index % 256:02X}": float(index) for index in range(512)
+    }
+    await coordinator._async_ble_event({"type": "advertisement", "address": ADDRESS})
+
+    assert len(coordinator._last_advertisement) == 512
+    assert ADDRESS in coordinator._last_advertisement
+    coordinator.bridge.send.assert_awaited_once()
+
+
+async def test_stale_discovery_cannot_add_device_to_new_bridge_generation(coordinator):
+    await coordinator._async_engine_message(
+        {"type": "discovered", "address": ADDRESS, "name": "stale"},
+        coordinator.bridge.epoch - 1,
+    )
+    assert not coordinator.devices
+
+
+async def test_new_discovery_during_battery_read_does_not_break_polling(coordinator):
+    coordinator.engine_connected = True
+    coordinator.bridge.connected = True
+    description = device_description()
+    description["DeviceMessages"]["SensorReadCmd"] = [{"SensorType": "Battery"}]
+    coordinator._update_devices([description])
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_battery(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return {"message": {"SensorReading": {"Data": [75]}}}
+
+    coordinator.bridge.request.side_effect = delayed_battery
+    poll = asyncio.create_task(coordinator._async_tick(None))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        await coordinator._async_engine_message(
+            {"type": "discovered", "address": OTHER_ADDRESS, "name": "Another device"},
+            coordinator.bridge.epoch,
+        )
+        release.set()
+        await asyncio.wait_for(poll, 1)
+    finally:
+        poll.cancel()
+        await asyncio.gather(poll, return_exceptions=True)
+
+    assert coordinator.devices[ADDRESS].battery == 75
+    assert OTHER_ADDRESS in coordinator.devices

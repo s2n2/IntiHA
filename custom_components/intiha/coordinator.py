@@ -26,15 +26,14 @@ from .ble import BleBridge
 from .bridge import BridgeError, EngineBridge
 from .const import (
     CONF_AUTO_RECONNECT,
-    CONF_BRIDGE_TOKEN,
     CONF_CONTROL_TIMEOUT,
-    CONF_DEVICES,
     CONF_ENGINE_URL,
     CONF_SCAN_DURATION,
     DEFAULT_CONTROL_TIMEOUT,
     DEFAULT_SCAN_DURATION,
     DOMAIN,
     MAX_BLE_REQUESTS,
+    MAX_KNOWN_DEVICES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,7 +41,7 @@ _MAC = re.compile(r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$")
 
 
 def normalise_address(value: str) -> str:
-    """Use one stable representation for registry and allowlist keys."""
+    """Use one stable representation for Bluetooth device registry keys."""
     value = value.strip().upper().replace("-", ":")
     if not _MAC.fullmatch(value):
         raise ValueError("Expected a Bluetooth address such as AA:BB:CC:DD:EE:FF")
@@ -85,10 +84,7 @@ class IntiHACoordinator:
         self.hass = hass
         self.entry = entry
         self.config = {**entry.data, **entry.options}
-        self.selected = {
-            normalise_address(address) for address in self.config.get(CONF_DEVICES, [])
-        }
-        self.enabled = False
+        self.enabled = True
         self.engine_connected = False
         self.client_connected = False
         self.scanning = False
@@ -98,9 +94,7 @@ class IntiHACoordinator:
         self._stop_failure_generation = 0
         self._uncertain_addresses: set[str] = set()
         self.discovered: dict[str, dict[str, Any]] = {}
-        self.devices: dict[str, DeviceState] = {
-            address: DeviceState(address, f"Device {address[-5:]}") for address in self.selected
-        }
+        self.devices: dict[str, DeviceState] = {}
         self._listeners: set[Callable[[], None]] = set()
         self._request_tasks: set[asyncio.Task] = set()
         self._background_tasks: set[asyncio.Task] = set()
@@ -113,12 +107,11 @@ class IntiHACoordinator:
         self._store = Store[dict[str, Any]](hass, 1, f"{DOMAIN}.{entry.entry_id}")
         self._cancel_timer: Callable[[], None] | None = None
         self.ble = BleBridge(
-            hass, self._async_ble_event, lambda address: address.upper() in self.selected
+            hass, self._async_ble_event, lambda address: address.upper() in self.devices
         )
         self.bridge = EngineBridge(
             async_get_clientsession(hass),
             self.config[CONF_ENGINE_URL],
-            self.config[CONF_BRIDGE_TOKEN],
             self._hello,
             self._async_engine_message,
             self._async_disconnected,
@@ -166,7 +159,6 @@ class IntiHACoordinator:
             "devices": {
                 address: {"name": device.name, "messages": device.messages}
                 for address, device in self.devices.items()
-                if address in self.selected
             },
         }
 
@@ -180,7 +172,6 @@ class IntiHACoordinator:
         return {
             "enabled": self.enabled,
             "auto_reconnect": self.config.get(CONF_AUTO_RECONNECT, True),
-            "selected_addresses": sorted(self.selected),
             "manual_timeout_seconds": self.config.get(
                 CONF_CONTROL_TIMEOUT, DEFAULT_CONTROL_TIMEOUT
             ),
@@ -195,13 +186,15 @@ class IntiHACoordinator:
     async def async_initialize(self) -> None:
         """Read local state only. No engine or device can block entry setup."""
         data = await self._store.async_load() or {}
-        self.enabled = bool(data.get("enabled", False))
+        self.enabled = bool(data.get("enabled", True))
         self.stop_uncertain = bool(data.get("stop_uncertain", False))
-        self._uncertain_addresses = set(data.get("uncertain_addresses", [])) & self.selected
+        self._uncertain_addresses = {
+            address for address in data.get("uncertain_addresses", []) if _MAC.fullmatch(address)
+        }
         for address, metadata in data.get("devices", {}).items():
-            if address in self.devices:
-                self.devices[address].name = metadata.get("name", self.devices[address].name)
-                self.devices[address].messages = metadata.get("messages", {})
+            device = self._register_device(address, metadata.get("name", "Device"))
+            if device is not None:
+                device.messages = metadata.get("messages", {})
         await self.ble.async_start()
 
     @callback
@@ -255,6 +248,9 @@ class IntiHACoordinator:
             try:
                 if self.bridge.connected:
                     await self.bridge.request("configure", **self._settings())
+                    if enabled and self.engine_connected:
+                        self._last_advertisement.clear()
+                        self._spawn(self._async_send_cached(self.bridge.epoch), "enable discovery")
             except BridgeError as err:
                 self.last_error = self._safe_error(err)
                 if enabled:
@@ -267,7 +263,7 @@ class IntiHACoordinator:
             raise HomeAssistantError("Turn IntiHA on before searching for devices")
         if not self.bridge.connected:
             raise HomeAssistantError(
-                "IntiHA engine is offline. Start the app and check its address and bridge token."
+                "IntiHA engine is offline. Start the app and check its address."
             )
         seconds = self.config.get(CONF_SCAN_DURATION, DEFAULT_SCAN_DURATION)
         self._scan_until = self.hass.loop.time() + seconds
@@ -404,6 +400,8 @@ class IntiHACoordinator:
         return response
 
     async def _async_engine_message(self, message: dict[str, Any], epoch: int) -> None:
+        if epoch != self.bridge.epoch:
+            return
         kind = message.get("type")
         if kind == "hello":
             self.engine_connected = True
@@ -425,12 +423,14 @@ class IntiHACoordinator:
             self._update_devices(message.get("devices", []))
         elif kind == "discovered":
             address = str(message.get("address", "")).upper()
-            if _MAC.fullmatch(address) and len(self.discovered) < 256:
+            device = self._register_device(address, str(message.get("name", "Device")))
+            if device is not None:
                 self.discovered[address] = {
                     "address": address,
                     "name": str(message.get("name", "Device"))[:100],
                     "protocols": message.get("protocols", []),
                 }
+                self._save()
         elif kind == "request":
             if len(self._request_tasks) >= MAX_BLE_REQUESTS:
                 await self.bridge.send(
@@ -453,13 +453,25 @@ class IntiHACoordinator:
             self._update_sensor(message.get("message", {}))
         self._notify()
 
+    def _register_device(self, address: str, name: str) -> DeviceState | None:
+        """Remember a supported device identified by the official engine."""
+        if not _MAC.fullmatch(address):
+            return None
+        if address in self.devices:
+            return self.devices[address]
+        if len(self.devices) >= MAX_KNOWN_DEVICES:
+            return None
+        device = DeviceState(address, str(name)[:100] or "Device")
+        self.devices[address] = device
+        return device
+
     def _update_devices(self, descriptions: list[dict[str, Any]]) -> None:
         connected: set[str] = set()
         for description in descriptions:
             address = str(description.get("address", "")).upper()
-            if address not in self.devices:
+            device = self._register_device(address, description.get("DeviceName", "Device"))
+            if device is None:
                 continue
-            device = self.devices[address]
             index = description.get("DeviceIndex")
             if not isinstance(index, int):
                 continue
@@ -519,7 +531,8 @@ class IntiHACoordinator:
                 raise RuntimeError("IntiHA is disabled")
             if message.get("op") == "scan":
                 # Scanning is shared and owned by HA. Advertisements are
-                # forwarded during the engine's bounded discovery window.
+                # forwarded continuously while enabled. An explicit search
+                # also refreshes cached advertisements and retry attempts.
                 enabled = bool(message.get("enabled", False))
                 if enabled:
                     self._scan_until = self.hass.loop.time() + self.config.get(
@@ -554,14 +567,17 @@ class IntiHACoordinator:
                 device.last_seen = dt_util.utcnow()
                 self._notify()
             now = self.hass.loop.time()
-            if address not in self.selected and now >= self._scan_until:
+            if not self.enabled or self._shutdown:
                 return
             if not self.engine_connected:
                 return
             if now - self._last_advertisement.get(address, -100) < 1.5:
                 return
             if len(self._last_advertisement) >= 512 and address not in self._last_advertisement:
-                return
+                # Rotating Bluetooth addresses must not permanently fill the
+                # throttle cache and prevent new compatible devices appearing.
+                oldest = min(self._last_advertisement, key=self._last_advertisement.get)
+                self._last_advertisement.pop(oldest)
             self._last_advertisement[address] = now
         elif kind == "disconnected":
             if address in self.devices:
@@ -575,7 +591,7 @@ class IntiHACoordinator:
                     self._notify()
         elif kind == "stop_failed":
             self._stop_failure_generation += 1
-            if address in self.selected:
+            if _MAC.fullmatch(address):
                 self._uncertain_addresses.add(address)
             self.stop_uncertain = True
             self.last_error = "A stop command could not be confirmed; check the device directly"
@@ -613,7 +629,7 @@ class IntiHACoordinator:
         self._notify()
         if not self.enabled or not self.engine_connected or self.client_connected:
             return
-        for device in self.devices.values():
+        for device in tuple(self.devices.values()):
             sensor_index = device.battery_index()
             if not device.connected or sensor_index is None or device.index is None:
                 continue
@@ -644,7 +660,7 @@ class IntiHACoordinator:
         self._notify()
 
     def _safe_error(self, err: Exception | str) -> str:
-        text = str(err).replace(self.config[CONF_BRIDGE_TOKEN], "[redacted]")
+        text = str(err)
         # Do not record potentially credential-bearing URLs from network errors.
         text = re.sub(r"wss?://\S+", "[engine]", text)
         return text[:180]

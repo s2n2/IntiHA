@@ -199,8 +199,8 @@ async def test_connect_services_read_write_and_new_adapter_lookup(radio):
     assert radio.lookup.call_count == 2
 
 
-async def test_unapproved_device_never_reaches_bluetooth(radio):
-    with pytest.raises(ble.BleBridgeError, match="not approved"):
+async def test_unrecognised_device_never_reaches_bluetooth(radio):
+    with pytest.raises(ble.BleBridgeError, match="not been identified as compatible"):
         await radio.bridge.async_request(
             {"op": "connect", "address": OTHER_ADDRESS, "connection_id": "bad"}
         )
@@ -208,7 +208,7 @@ async def test_unapproved_device_never_reaches_bluetooth(radio):
     radio.lookup.assert_not_called()
 
 
-async def test_approval_revoked_during_connect_closes_partial_client(radio):
+async def test_device_removed_during_connect_closes_partial_client(radio):
     radio.gate = asyncio.Event()
     pending = asyncio.create_task(radio.request("connect"))
     await radio.started.wait()

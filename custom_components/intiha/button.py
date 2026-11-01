@@ -3,7 +3,7 @@
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.entity import EntityCategory
 
-from .entity import IntiHAEntity
+from .entity import IntiHAEntity, async_add_discovered_entities
 
 PARALLEL_UPDATES = 0
 
@@ -11,10 +11,13 @@ PARALLEL_UPDATES = 0
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = entry.runtime_data
     entities = [IntiHAButton(coordinator, key) for key in ("search", "stop_all", "reconnect")]
-    entities.extend(
-        IntiHAButton(coordinator, "stop", address) for address in sorted(coordinator.selected)
-    )
     async_add_entities(entities)
+    async_add_discovered_entities(
+        coordinator,
+        entry,
+        async_add_entities,
+        lambda address: [IntiHAButton(coordinator, "stop", address)],
+    )
 
 
 class IntiHAButton(IntiHAEntity, ButtonEntity):

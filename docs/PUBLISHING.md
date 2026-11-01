@@ -8,7 +8,7 @@ The project contains both parts needed for installation:
 Copy the **contents** of the supplied `IntiHA/` directory into the root of the
 GitHub repository. Do not put the entire directory inside another `IntiHA/`
 folder. Keep `.github`, `.gitignore` and `.gitattributes` as well as the visible
-folders. Tokens are configured later in HA and must not be committed.
+folders. IntiHA starts with default settings; no client or bridge credentials are required.
 
 ## With an authenticated Git checkout
 
@@ -49,11 +49,11 @@ same GitHub repository URL is used in HACS and in the HA App store.
 ## Optional release tag
 
 The default branch works as a HACS custom repository without a published
-release. When ready to prepare version 0.1.0:
+release. When ready to prepare version 0.2.0:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 The release workflow validates version consistency and prepares a **draft**

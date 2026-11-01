@@ -3,7 +3,7 @@
 from homeassistant.const import Platform
 
 DOMAIN = "intiha"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 PLATFORMS = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
@@ -12,8 +12,6 @@ PLATFORMS = [
     Platform.SWITCH,
 ]
 CONF_ENGINE_URL = "engine_url"
-CONF_BRIDGE_TOKEN = "bridge_token"
-CONF_DEVICES = "selected_devices"
 CONF_AUTO_RECONNECT = "auto_reconnect"
 CONF_CONTROL_TIMEOUT = "control_timeout"
 CONF_SCAN_DURATION = "scan_duration"
@@ -23,4 +21,5 @@ DEFAULT_SCAN_DURATION = 30
 MAX_MESSAGE_BYTES = 262144
 MAX_PENDING_REQUESTS = 32
 MAX_BLE_REQUESTS = 16
+MAX_KNOWN_DEVICES = 256
 ADMIN_TIMEOUT = 45

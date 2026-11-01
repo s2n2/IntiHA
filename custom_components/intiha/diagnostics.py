@@ -1,4 +1,4 @@
-"""Useful diagnostics without tokens, BLE addresses or device activity."""
+"""Useful diagnostics without BLE addresses or device activity."""
 
 from .const import CONF_AUTO_RECONNECT, CONF_CONTROL_TIMEOUT, DEFAULT_CONTROL_TIMEOUT, VERSION
 
@@ -14,7 +14,7 @@ async def async_get_config_entry_diagnostics(hass, entry):
         "scanning": coordinator.scanning,
         "stop_unconfirmed": coordinator.stop_uncertain,
         "active_connectable_scanners": coordinator.active_proxy_count,
-        "selected_device_count": len(coordinator.selected),
+        "known_device_count": len(coordinator.devices),
         "connected_device_count": sum(device.connected for device in coordinator.devices.values()),
         "auto_reconnect": coordinator.config.get(CONF_AUTO_RECONNECT, True),
         "manual_timeout_seconds": coordinator.config.get(

@@ -56,7 +56,6 @@ def transport():
     bridge = EngineBridge(
         SimpleNamespace(ws_connect=connect),
         "ws://engine:12346/bridge",
-        "b" * 64,
         lambda: {"type": "hello", "protocol": 1, "enabled": False},
         on_message,
         on_disconnect,
@@ -64,12 +63,12 @@ def transport():
     return bridge, socket, calls, on_message, on_disconnect
 
 
-async def test_token_in_header_and_handshake_before_commands(transport):
+async def test_tokenless_connection_and_handshake_before_commands(transport):
     bridge, socket, calls, on_message, _ = transport
     runner = asyncio.create_task(bridge.run())
     await socket.started.wait()
     assert calls[0][0] == "ws://engine:12346/bridge"
-    assert calls[0][1]["headers"] == {"Authorization": "Bearer " + "b" * 64}
+    assert "headers" not in calls[0][1]
     assert socket.sent == [{"type": "hello", "protocol": 1, "enabled": False}]
     assert not bridge.connected
     await socket.messages.put('{"type":"hello","protocol":1}')
@@ -123,6 +122,32 @@ async def test_old_epoch_cannot_write_to_new_socket(transport):
     with pytest.raises(BridgeError, match="disconnected"):
         await bridge.send({"type": "response"}, epoch=8)
     assert not socket.sent
+
+
+async def test_admin_waiting_for_send_lock_cannot_cross_reconnection(transport):
+    bridge, old_socket, _, _, _ = transport
+    bridge._ws = old_socket
+    bridge.connected = True
+    bridge.epoch = 1
+    await bridge._send_lock.acquire()
+    request = asyncio.create_task(bridge.request("command", message={"ScalarCmd": {}}))
+    await asyncio.sleep(0)
+    assert len(bridge._pending) == 1
+    # Match the disconnect path while an old sender is waiting for the lock.
+    for future in bridge._pending.values():
+        future.set_exception(BridgeError("Engine session ended; command was not replayed"))
+    bridge._pending.clear()
+    new_socket = FakeSocket()
+    bridge._ws = new_socket
+    bridge.epoch = 2
+    bridge._send_lock.release()
+
+    with pytest.raises(BridgeError, match="disconnected"):
+        await request
+
+    assert not old_socket.sent
+    assert not new_socket.sent
+    assert not bridge._pending
 
 
 async def test_pending_request_limit_fails_before_network(transport):

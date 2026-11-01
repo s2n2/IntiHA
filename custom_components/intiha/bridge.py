@@ -1,4 +1,4 @@
-"""Authenticated, bounded and generation-aware connection to the IntiHA engine.
+"""Bounded and generation-aware local connection to the IntiHA engine.
 
 This transport deliberately does not replay requests. A reconnected session
 receives configuration and current advertisements, never previous output values.
@@ -29,14 +29,12 @@ class EngineBridge:
         self,
         session: aiohttp.ClientSession,
         url: str,
-        token: str,
         hello: Callable[[], dict[str, Any]],
         on_message: Callable[[dict[str, Any], int], Awaitable[None]],
         on_disconnect: Callable[[str], Awaitable[None]],
     ) -> None:
         self._session = session
         self._url = url
-        self._token = token
         self._hello = hello
         self._on_message = on_message
         self._on_disconnect = on_disconnect
@@ -77,11 +75,7 @@ class EngineBridge:
                     await self._interrupt_connection()
                     raise
             except aiohttp.WSServerHandshakeError as err:
-                error = (
-                    "Authentication failed"
-                    if err.status in (401, 403)
-                    else f"Engine HTTP error {err.status}"
-                )
+                error = f"Engine HTTP error {err.status}"
             except aiohttp.ClientError, OSError, TimeoutError:
                 error = "Cannot reach engine"
             except BridgeError as err:
@@ -117,7 +111,6 @@ class EngineBridge:
         generation = self._restart_generation
         async with self._session.ws_connect(
             self._url,
-            headers={"Authorization": f"Bearer {self._token}"},
             heartbeat=10,
             timeout=aiohttp.ClientWSTimeout(ws_receive=35, ws_close=5),
             max_msg_size=MAX_MESSAGE_BYTES,
@@ -183,12 +176,13 @@ class EngineBridge:
             raise BridgeError("Engine is disconnected")
         if len(self._pending) >= MAX_PENDING_REQUESTS:
             raise BridgeError("Engine is busy")
+        epoch = self.epoch
         request_id = self._next_id
         self._next_id += 1
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         try:
-            await self.send({"type": "admin", "id": request_id, "op": op, **payload})
+            await self.send({"type": "admin", "id": request_id, "op": op, **payload}, epoch=epoch)
             async with asyncio.timeout(ADMIN_TIMEOUT):
                 return await future
         except TimeoutError as err:
@@ -197,6 +191,10 @@ class EngineBridge:
             self._pending.pop(request_id, None)
             if not future.done():
                 future.cancel()
+            elif not future.cancelled():
+                # A disconnect may fail this future while send is still
+                # blocked. Consume that error even if send fails first.
+                future.exception()
 
     async def reconnect(self) -> None:
         """Close the old session; the background runner makes a fresh one."""
