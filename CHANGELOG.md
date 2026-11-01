@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1
+
+App installation and release visibility maintenance release.
+
+- Fix the Supervisor/Docker installation failure caused by the missing
+  `engine/licenses/` directory in the published GitHub app build context.
+  Supply the complete pinned dependency-licence notices with the app source.
+- Add an explicit version-history table to the README displayed by HACS.
+- Generate GitHub release descriptions from these changelog entries so HACS
+  can show the relevant update notes, once the draft release is published.
+- Check the required licence files are included before CI builds the app.
+- No changes to device discovery, Bluetooth connections or configuration.
+
 ## 0.2.0
 
 Plug-and-play setup and automatic compatible-device connection.

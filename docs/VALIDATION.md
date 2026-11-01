@@ -1,4 +1,4 @@
-# Validation record: IntiHA 0.2.0
+# Validation record: IntiHA 0.2.1 (prior tests from 0.2.0)
 
 Date: 1 November 2026.
 
@@ -120,3 +120,10 @@ successfully because its isolated environment lacked `aiodocker`.
 The release is an initial implementation for hardware evaluation. These
 results support its software behaviour and failure handling; they are not a
 claim of guaranteed physical safety or guaranteed radio reliability.
+
+## 0.2.1 packaging fix
+
+The 0.2.1 patch includes the dependency-licence directory in the repository
+patch, adds an early file-presence check before the CI Docker build, and
+updates the app/integration/Cargo versions. This does not imply that a physical
+HA OS install or Docker image build was executed in this environment.

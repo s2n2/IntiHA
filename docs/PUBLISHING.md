@@ -49,14 +49,28 @@ same GitHub repository URL is used in HACS and in the HA App store.
 ## Optional release tag
 
 The default branch works as a HACS custom repository without a published
-release. When ready to prepare version 0.2.0:
+release. When ready to prepare version 0.2.1:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.2.1
+git push origin v0.2.1
 ```
 
 The release workflow validates version consistency and prepares a **draft**
 release with the HACS archive after all checks pass. Review and publish the
 draft when hardware testing supports the release description. This project
 does not claim inclusion in HACS's default catalogue.
+
+## Release notes shown in HACS
+
+HACS displays the repository README as the information page. Keep the
+**Version history** section of the README and `CHANGELOG.md` updated together.
+The release workflow extracts the matching version's section from `CHANGELOG.md`
+and creates a **draft** GitHub release. **Publish the draft** in GitHub's Releases
+tab when the build is validated. HACS updates then expose that published
+release's notes. Merely pushing a tag or leaving the release in draft does not
+make its update notes visible.
+
+For this patch, make sure `engine/licenses/` is actually committed and pushed.
+The HA Supervisor Docker build uses `engine/` as its build context and requires
+the bundled dependency-licence files.

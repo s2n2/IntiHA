@@ -13,11 +13,23 @@ connects them to Home Assistant's Bluetooth network and provides the HA
 controls and sensors. Home Assistant Container users can run the same engine
 with Docker Compose.
 
-**Version 0.2.0 — ready for physical hardware evaluation.** Automated tests
+**Version 0.2.1 — ready for physical hardware evaluation.** Automated tests
 use real Home Assistant and the official Buttplug engine with a simulated
 radio. Actual devices and room-to-room radio coverage still require testing.
 This is an independent project, not an official Intiface or Home Assistant
 product.
+
+## Version history
+
+HACS shows this README on the integration's information page. The full history
+is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
+[GitHub release notes](https://github.com/s2n2/IntiHA/releases).
+
+| Version | What changed |
+|---|---|
+| **0.2.1** | Fix IntiHA Engine app installation by including the full dependency-licence directory in the GitHub repository; add release-history visibility and build checks. No configuration changes. |
+| **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
+| **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
 
 ## Quick setup on Home Assistant OS
 
