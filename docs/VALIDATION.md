@@ -186,3 +186,16 @@ HA OS install or Docker image build was executed in this environment.
   engine remains bridge-compatible with the 0.2.5 HACS integration.
 - NOT RUN: full Home Assistant/hassfest/HACS CI, Rust build/tests, Docker
   installation, or tests with actual Bond and ESPHome hardware.
+
+## 0.2.6 HACS stability hotfix (1 November 2026)
+
+- Removed all automatic active-scan triggers introduced in 0.2.5; retained
+  explicit Search and regular advertisement callbacks.
+- Added direct coordinator regression checks: manual scan only, no active
+  scans on hello/enable/timer, concurrent manual scan suppression, obsolete
+  bridge epoch and cancellation handling.
+- No Rust or engine protocol modifications. A new engine Docker build is not
+  required for the HACS-only update.
+- Pending: actual Home Assistant/Core 2026.10.4, full GitHub CI, real ESPHome
+  proxies and We-Vibe Bond verification. If HA controls remain unavailable,
+  obtain Core traceback; the Engine log cannot identify HA setup failures.

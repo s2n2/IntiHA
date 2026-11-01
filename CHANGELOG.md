@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.6
+
+Stability rollback for the HACS integration after users reported unavailable
+entities, rapid bridge-session cycling and Bluetooth connection timeouts on
+0.2.5. This release does **not** claim to fix the remaining Bond GATT errors.
+
+- Disable v0.2.5's automatic bus-wide active Bluetooth scans on engine hello,
+  when enabling IntiHA, and in the 30-second timer. These could overlap
+  active proxy GATT connections and initialisation.
+- Restore passive/default Home Assistant advertisement-based automatic
+  discovery and reconnect behaviour from 0.2.4.
+- Keep explicit Search's on-demand active scan, while preventing overlapping
+  manual sweeps and suppressing late scans after an engine session changes.
+- Leave the Rust engine and BLE protocol unchanged. An installed v0.2.4/0.2.5
+  Engine app is compatible with the 0.2.6 HACS integration.
+- IMPORTANT: Greyed-out master controls mean the HA config entry is not
+  loaded or the frontend/Core is unavailable, rather than just a Bond GATT
+  failure. If that persists after a Core restart, inspect Home Assistant
+  Core setup errors; engine logs alone do not establish why.
+
 ## 0.2.5
 
 Home Assistant Bluetooth discovery hotfix. The HACS integration is the only

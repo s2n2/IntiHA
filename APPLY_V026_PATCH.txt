@@ -1,0 +1,20 @@
+IntiHA v0.2.6 - HACS-only stability patch
+
+PATCH BASE: v0.2.5 repo checkout at https://github.com/s2n2/IntiHA
+
+Option A: Copy file paths from this ZIP to repo root and commit them.
+Option B: git apply --check IntiHA-v0.2.6.patch; git apply IntiHA-v0.2.6.patch
+
+git add -A
+git commit -m "IntiHA 0.2.6: rollback automatic active scans"
+git push
+
+Publish GitHub release v0.2.6 to advertise the update through HACS.
+
+Only HACS integration code changes; leave the installed Engine app at 0.2.4/0.2.5.
+Install v0.2.6 via HACS, restart Home Assistant.
+If the master Enabled toggle and all sensors are still unavailable, see the
+HA Core log for an IntiHA setup/platform exception. Engine BLE errors are not
+sufficient to diagnose an unloaded config entry.
+
+This is not hardware-verified. The Bond transport issue may persist.
