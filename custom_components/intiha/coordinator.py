@@ -105,6 +105,7 @@ class IntiHACoordinator:
         self._state_lock = asyncio.Lock()
         self._last_advertisement: dict[str, float] = {}
         self._scan_until = 0.0
+        self._next_active_sweep = 0.0
         self._store = Store[dict[str, Any]](hass, 1, f"{DOMAIN}.{entry.entry_id}")
         self._cancel_timer: Callable[[], None] | None = None
         self.ble = BleBridge(
@@ -252,6 +253,10 @@ class IntiHACoordinator:
                     if enabled and self.engine_connected:
                         self._last_advertisement.clear()
                         self._spawn(self._async_send_cached(self.bridge.epoch), "enable discovery")
+                        self._spawn(
+                            self._async_active_scan(self.bridge.epoch, 10),
+                            "enable active BLE scan",
+                        )
             except BridgeError as err:
                 self.last_error = self._safe_error(err)
                 if enabled:
@@ -277,11 +282,47 @@ class IntiHACoordinator:
             self._last_advertisement.clear()
             for advertisement in self.ble.discovered():
                 await self._async_ble_event({**advertisement, "type": "advertisement"})
+            # The engine's scan command does not start a radio sweep. HA now
+            # defaults many ESPHome proxies to AUTO/passive; a wildcard
+            # Bluetooth callback alone does not request active scan responses.
+            self._spawn(
+                self._async_active_scan(self.bridge.epoch, seconds),
+                "requested active BLE scan",
+            )
         except BridgeError as err:
             self.scanning = False
             self._scan_until = 0
             self._notify()
             raise HomeAssistantError(self._safe_error(err)) from err
+
+    async def _async_active_scan(self, epoch: int, seconds: float) -> None:
+        """Ask HA's AUTO scanners for fresh scan responses without a new scanner.
+
+        Only HA owns adapters, including ESPHome proxies. Avoid holding the
+        UI's Search button while the on-demand radio sweep is in progress.
+        A retired engine session must not receive advertisements afterward.
+        """
+        try:
+            await bluetooth.async_request_active_scan(
+                self.hass, duration=min(float(seconds), 15.0)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            _LOGGER.warning(
+                "IntiHA could not request an active Bluetooth scan: %s",
+                self._safe_error(err),
+            )
+            return
+        if (
+            self._shutdown
+            or not self.enabled
+            or not self.engine_connected
+            or epoch != self.bridge.epoch
+        ):
+            return
+        self._last_advertisement.clear()
+        await self._async_send_cached(epoch)
 
     async def async_stop_all(self) -> None:
         async with self._state_lock:
@@ -410,6 +451,8 @@ class IntiHACoordinator:
             self.version = message.get("version")
             self._last_advertisement.clear()
             self._spawn(self._async_send_cached(epoch), "cached advertisements")
+            if self.enabled:
+                self._spawn(self._async_active_scan(epoch, 10), "initial active BLE scan")
         elif kind == "status":
             self.client_connected = bool(message.get("client_connected", False))
             self.scanning = bool(message.get("scanning", False))
@@ -659,7 +702,19 @@ class IntiHACoordinator:
 
     async def _async_tick(self, _now: datetime) -> None:
         self._notify()
-        if not self.enabled or not self.engine_connected or self.client_connected:
+        if not self.enabled or not self.engine_connected:
+            return
+        # An unfiltered ACTIVE callback is not itself an active-scan request
+        # on HA 2026.6+. Give newly powered-on devices a bounded periodic
+        # discovery opportunity without continuous active scanning.
+        now = self.hass.loop.time()
+        if now >= self._next_active_sweep:
+            self._next_active_sweep = now + 180
+            self._spawn(
+                self._async_active_scan(self.bridge.epoch, 10),
+                "periodic active BLE discovery",
+            )
+        if self.client_connected:
             return
         for device in tuple(self.devices.values()):
             sensor_index = device.battery_index()

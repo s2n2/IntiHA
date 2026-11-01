@@ -13,11 +13,11 @@ connects them to Home Assistant's Bluetooth network and provides the HA
 controls and sensors. Home Assistant Container users can run the same engine
 with Docker Compose.
 
-**Version 0.2.4 - connection and stop-initialisation revision.** Update both
-components together. This patch passed 45 isolated Python transport tests
-with fake radio/HA imports. Its new Rust/Bond regression tests, full HA suite
-and Docker image still need to pass in GitHub Actions. Physical device and
-room-to-room coverage testing remains necessary.
+**Version 0.2.5 - Bluetooth discovery improvement.** The HACS integration
+now requests genuine active scans on Search, at startup, and periodically.
+The Engine can remain at 0.2.4 because the bridge protocol is unchanged.
+This patch does not resolve the separate Bond GATT connection failure.
+Physical device and room-to-room coverage testing remain necessary.
 This is an independent project, not an official Intiface or Home Assistant
 product.
 
@@ -29,12 +29,24 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
+| **0.2.5** | Make Search perform an actual HA Bluetooth active sweep; add bounded periodic discovery for devices not visible from passive advertisements. HACS-only runtime change; the 0.2.4 Engine is compatible. |
 | **0.2.4** | Separate driver stop-packet generation from real GATT verification; atomic write-and-cache acknowledgement; serialised connection attempts; useful connection-stage diagnostics. Update both HACS and the Engine app. |
 | **0.2.3** | Restore control for verified classic We-Vibe devices when the upstream stopped-state command produces no Bluetooth writes; retain stop-on-disconnect and add detailed diagnostics. |
 | **0.2.2** | Fix Docker installation without relying on a separately published `engine/licenses/` folder; collect upstream dependency licences during the Rust build. |
 | **0.2.1** | Fix IntiHA Engine app installation by including the full dependency-licence directory in the GitHub repository; add release-history visibility and build checks. No configuration changes. |
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
+
+## Updating from 0.2.4
+
+Install the **0.2.5 HACS integration** and restart Home Assistant. The Engine
+may remain on 0.2.4; its bridge protocol has not changed. The repo also bumps
+Engine packaging metadata to 0.2.5 for a consistent GitHub release, but
+rebuilding the Engine is **not required** for this discovery hotfix. Search
+now starts a real active sweep through Home Assistant's existing adapters.
+If a peripheral still does not appear, check whether it advertises in the
+Bluetooth network map and whether Buttplug supports its protocol. Discovery
+and connection are separate operations.
 
 ## Updating from 0.2.3
 

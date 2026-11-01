@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.5
+
+Home Assistant Bluetooth discovery hotfix. The HACS integration is the only
+runtime component changed; the compatible Engine may remain on 0.2.4.
+
+- Search devices now requests a real Home Assistant on-demand active scan,
+  rather than only resending cached Bluetooth advertisements. This includes
+  ESPHome scanners left in Auto (passive) mode. The scan runs in the
+  background so the Search button does not block until it finishes.
+- Request one active sweep when IntiHA first connects or is re-enabled, and
+  refresh periodically at a bounded interval (every three minutes) while on.
+  Normal listening remains managed by Home Assistant; no separate BLE scanner.
+- Forward the updated advertisements after the sweep completes so newly
+  identifiable compatible devices can enter Buttplug's normal connection flow.
+- Keep GATT connections, stop verification, connection retries and disabled
+  controls unchanged. This does not claim to resolve the Bond's peer-terminated
+  connection: discovery and successful GATT setup are different stages.
+- Include active-scan regression checks; no physical hardware verification.
+
 ## 0.2.4
 
 Connection and stop-preparation revision. Update the HACS integration and
