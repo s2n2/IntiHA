@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0b3
+## 0.3.1
 
 - Give the proxy-native engine a new Supervisor app slug, `intiha_proxy_engine`, so it cannot reuse or upgrade in-place from the old native-Bluetooth `intiha_engine` app.
 - Add an explicit startup log marker showing `transport=home_assistant_proxy` and `local_bluetooth=false`.
@@ -193,3 +193,9 @@ Initial implementation for physical hardware evaluation.
   ownership, generation isolation, stop-plan fallback and no command replay.
 - Automated HA, BLE-transport, Rust and cross-process tests; CI metadata and
   app-image checks; physical acceptance procedure.
+
+## 0.3.1
+
+- Proxy-native engine replaces the existing `intiha_engine` app in-place.
+- Restores the original Supervisor slug so installed 0.2.4 systems receive an upgrade rather than a second app.
+- No local Bluetooth adapter is required; all BLE transport remains through Home Assistant / ESPHome Bluetooth proxies.

@@ -3,7 +3,7 @@
 from homeassistant.const import Platform
 
 DOMAIN = "intiha"
-VERSION = "0.3.0b3"
+VERSION = "0.3.1"
 PLATFORMS = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
