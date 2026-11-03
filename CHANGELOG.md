@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0b3
+
+- Give the proxy-native engine a new Supervisor app slug, `intiha_proxy_engine`, so it cannot reuse or upgrade in-place from the old native-Bluetooth `intiha_engine` app.
+- Add an explicit startup log marker showing `transport=home_assistant_proxy` and `local_bluetooth=false`.
+- Keep the Home Assistant / ESPHome-proxy transport only; no local Bluetooth adapter, BlueZ, D-Bus or btleplug manager is used.
+- Retain the 0.3.0b2 proxy transport and reconstructed 0.2.7 connection/security fixes.
+
 ## 0.3.0b2
 
 Proxy-native beta rebuild for Home Assistant installations without a local Bluetooth adapter.

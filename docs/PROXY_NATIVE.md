@@ -1,6 +1,6 @@
-# Proxy-native Bluetooth transport: 0.3.0b2
+# Proxy-native Bluetooth transport: 0.3.0b3
 
-IntiHA 0.3.0b2 does **not** require a USB, PCIe or host Bluetooth adapter.
+IntiHA 0.3.0b3 does **not** require a USB, PCIe or host Bluetooth adapter.
 
 The supported runtime path is:
 

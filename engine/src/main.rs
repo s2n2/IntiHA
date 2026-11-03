@@ -14,7 +14,9 @@ async fn main() -> anyhow::Result<()> {
     let app = App::new(config).await?;
     tracing::info!(
         version = intiha_engine::VERSION,
-        "IntiHA engine started; waiting for Home Assistant"
+        transport = "home_assistant_proxy",
+        local_bluetooth = false,
+        "IntiHA Proxy Engine started; waiting for Home Assistant"
     );
     let supervisor = tokio::spawn(app.clone().supervise());
     let client_app = app.clone();
