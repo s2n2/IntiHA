@@ -1,6 +1,6 @@
 # IntiHA
 
-> **0.3.1 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. Do not install the native-only 0.3.0b1 app for this topology. The Proxy Engine never requires BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
+> **0.3.2 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. Do not install the native-only 0.3.0b1 app for this topology. The Proxy Engine never requires BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
 
 
 **A plug-and-play Buttplug server using Home Assistant's Bluetooth coverage.**
@@ -16,10 +16,10 @@ connects them to Home Assistant's Bluetooth network and provides the HA
 controls and sensors. Home Assistant Container users can run the same engine
 with Docker Compose.
 
-**Version 0.3.1 - proxy-native Bluetooth transport beta.**
+**Version 0.3.2 - proxy-native Bluetooth transport beta.**
 ### Important migration from 0.3.0b1 / 0.3.0b2
 
-The proxy engine now uses the distinct Supervisor slug `intiha_proxy_engine`. Stop and uninstall the old **IntiHA Native Engine** / `intiha_engine` app before installing **IntiHA Engine 0.3.1**. This prevents Home Assistant from reusing the old native-Bluetooth app image or metadata.
+The Supervisor app slug is `intiha_engine`, preserving the existing 0.2.4 installation identity so Home Assistant upgrades it in place. If the experimental `intiha_proxy_engine` 0.3.0b3 app is still installed, uninstall that obsolete app before installing 0.3.2.
 
 After startup, the engine log must contain `transport="home_assistant_proxy"` and `local_bluetooth=false`. If a log still says `Bluetooth LE adapter not found`, it is coming from the old native engine, not this build.
 

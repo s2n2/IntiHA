@@ -1,8 +1,15 @@
 # Changelog
 
+## 0.3.2
+
+- Fix release versioning for Cargo: use valid SemVer `0.3.2` in both `Cargo.toml` and `Cargo.lock`.
+- Keep the Supervisor slug `intiha_engine` so existing 0.2.4 installations upgrade in place.
+- Remove stale guidance that incorrectly told users to use the experimental `intiha_proxy_engine` slug.
+- The obsolete 0.3.0b3 proxy app used invalid Rust version `0.3.0b3` and must be uninstalled if still present.
+
 ## 0.3.1
 
-- Give the proxy-native engine a new Supervisor app slug, `intiha_proxy_engine`, so it cannot reuse or upgrade in-place from the old native-Bluetooth `intiha_engine` app.
+- Experimental note: 0.3.1 packaging briefly used a separate proxy-engine slug; 0.3.2 supersedes that approach and restores `intiha_engine` for in-place upgrades.
 - Add an explicit startup log marker showing `transport=home_assistant_proxy` and `local_bluetooth=false`.
 - Keep the Home Assistant / ESPHome-proxy transport only; no local Bluetooth adapter, BlueZ, D-Bus or btleplug manager is used.
 - Retain the 0.3.0b2 proxy transport and reconstructed 0.2.7 connection/security fixes.
