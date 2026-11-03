@@ -1,23 +1,14 @@
 # Third-party notices
 
-IntiHA uses the official Buttplug libraries without vendoring or renaming their device protocol implementations:
+This repository's new Python client and packaging are covered by LICENSE.
+No upstream engine or Bluetooth source is vendored in this source archive.
 
-| Dependency | Pinned version | Licence |
-|---|---|---|
-| buttplug_server | 12.0.2 | BSD-3-Clause |
-| buttplug_core | 11.0.2 | BSD-3-Clause |
-| buttplug_server_device_config | 12.0.1 | BSD-3-Clause |
+The native app installs the unmodified published `intiface-engine` 4.1.0 and its
+Cargo.lock-selected dependencies from the Cargo registry. Their individual
+licences apply. The image preserves available dependency LICENSE/COPYING/NOTICE
+files in `/usr/share/licenses/intiface/`. The app is a distributor/packager,
+not a claim to own or independently implement those protocols.
 
-Buttplug is copyright Nonpolynomial Labs, LLC and contributors. The original
-copyright notices and licence terms are collected directly from the pinned
-Rust dependency sources while the app image is built (see
-[engine/Cargo.lock](engine/Cargo.lock)). The image installs these files under
-`/usr/share/licenses/intiha/dependencies/`. This avoids requiring the large
-`engine/licenses/` source directory in the Home Assistant app repository.
-
-Home Assistant, Bleak, Bleak Retry Connector and the HA Bluetooth stack are
-separate runtime dependencies supplied by Home Assistant; their code is not
-copied into the HACS integration. Refer to those projects for their licences.
-
-The IntiHA name does not imply endorsement by Home Assistant, ESPHome, Shelly,
-Intiface, Buttplug, We-Vibe, or another device manufacturer.
+HA, aiohttp, ESPHome, bleak-esphome, habluetooth and related runtime components
+remain their respective upstream projects. Diagnostic use of HA's registered
+connector does not copy their implementation or extract/share Bluetooth keys.

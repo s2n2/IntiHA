@@ -1,78 +1,36 @@
-# Put this project in s2n2/IntiHA
+# Publishing
 
-The project contains both parts needed for installation:
+This source was packaged locally, not pushed to GitHub. Use a clean Git branch
+and the supplied patch, or inspect the complete repository snapshot and deletion
+manifest. Never claim a remote release or container image has been published
+until GitHub confirms it.
 
-- `custom_components/intiha/` for HACS;
-- `engine/` and `repository.yaml` for the HA App store.
+## Gates
 
-Copy the **contents** of the supplied `IntiHA/` directory into the root of the
-GitHub repository. Do not put the entire directory inside another `IntiHA/`
-folder. Keep `.github`, `.gitignore` and `.gitattributes` as well as the visible
-folders. IntiHA starts with default settings; no client or bridge credentials are required.
+`Validate rebuild` runs core/protocol tests, Ruff, a real HA 2026.10.4 loader test,
+hassfest, and builds the actual pinned upstream engine on amd64 and aarch64.
+The image test runs the actual native binary without hardware managers and
+checks the real v3 handshake/inventory/ping/stop messages against the production
+client. This is not a Bluetooth or HA OS installation test.
 
-## With an authenticated Git checkout
+Home Assistant 2026.10.4 requires Python >=3.14.2; the HA CI job uses Python 3.14.
+Core tests also ran locally on Python 3.13 because they deliberately do not
+import HA. CI requirements must not be confused with local validation results.
 
-If you have Git installed and authenticated on your computer:
-
-```bash
-git clone https://github.com/s2n2/IntiHA.git
-```
-
-Copy the supplied project files into that checkout, then run inside it:
-
-```bash
-git add .
-git commit -m "Add IntiHA integration and engine app"
-git push -u origin main
-```
-
-If your empty clone started on a branch named `master`, run
-`git branch -M main` before the push. Use your normal GitHub authentication;
-do not put a personal access token in the remote URL or a committed file.
-
-## Before installing
-
-Open the repository's **Actions** tab and check the validation run. The workflow
-runs HACS/hassfest validation, Python tests, Rust tests, the combined system
-test and native amd64/aarch64 container builds. The container builds are
-especially useful because a Docker runtime was not available in the original
-development workspace.
-
-Set the repository's **About** description to “Buttplug server using Home
-Assistant Bluetooth proxies” and add at least one relevant topic, such as
-`home-assistant`, `hacs`, or `bluetooth`. The HACS validation action checks this
-GitHub repository metadata as well as the files.
-
-Once that run passes, follow the installation steps in the root README. The
-same GitHub repository URL is used in HACS and in the HA App store.
-
-## Optional release tag
-
-The default branch works as a HACS custom repository without a published
-release. When ready to prepare version 0.2.2:
+After reviewing green CI:
 
 ```bash
-git tag v0.2.2
-git push origin v0.2.2
+git tag v0.3.0b1
+git push origin v0.3.0b1
 ```
 
-The release workflow validates version consistency and prepares a **draft**
-release with the HACS archive after all checks pass. Review and publish the
-draft when hardware testing supports the release description. This project
-does not claim inclusion in HACS's default catalogue.
+The release workflow runs all validation gates again before creating a **draft
+prerelease** using the current changelog section. Inspect its artifacts and then
+publish the prerelease. HACS users may need to enable beta releases/select this
+version. `hacs.json` renders README, which includes the complete version-history
+table and prominently states the missing proxy-control scope.
 
-## Release notes shown in HACS
-
-HACS displays the repository README as the information page. Keep the
-**Version history** section of the README and `CHANGELOG.md` updated together.
-The release workflow extracts the matching version's section from `CHANGELOG.md`
-and creates a **draft** GitHub release. **Publish the draft** in GitHub's Releases
-tab when the build is validated. HACS updates then expose that published
-release's notes. Merely pushing a tag or leaving the release in draft does not
-make its update notes visible.
-
-For version 0.2.2, the app no longer requires `engine/licenses/` in GitHub.
-The Dockerfile collects the relevant licence files from Cargo at build time.
-Wait for the GitHub Actions app-image check to pass before publishing the tag.
-The HA Supervisor Docker build uses `engine/` as its build context and requires
-the bundled dependency-licence files.
+No engine image is pushed to a container registry. The app builds its local
+Dockerfile when installed. For a later production release, publish verified
+multi-architecture images rather than imposing Rust builds on every HA host.
+This preview does not silently fetch an unverified prebuilt binary.

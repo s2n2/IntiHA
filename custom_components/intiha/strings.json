@@ -1,196 +1,42 @@
 {
-  "title": "IntiHA",
   "config": {
     "step": {
       "user": {
-        "title": "Connect IntiHA",
-        "description": "The IntiHA Engine app is normally found automatically. For an engine running elsewhere, enter its address below. Supported Bluetooth devices connect automatically when powered on.",
+        "title": "Connect to Intiface",
+        "description": "Use a normal Intiface Central server or the IntiHA Native Engine app. This release controls native Bluetooth, not ESPHome proxies. No tokens are required. The old /bridge endpoint is not supported.",
         "data": {
-          "engine_url": "Engine address"
-        },
-        "data_description": {
-          "engine_url": "Enter a host name or IP address, for example 192.168.0.10. A full ws:// or wss:// bridge URL also works."
+          "engine_url": "Intiface server WebSocket address"
         }
       },
       "hassio_confirm": {
-        "title": "IntiHA is ready",
-        "description": "Connect to the IntiHA Engine app? Supported devices will connect automatically when powered on. You can turn IntiHA off at any time with its Enabled switch."
+        "title": "IntiHA Native Engine found",
+        "description": "Connect to {url}. This app uses the HA host's local Bluetooth adapter, not ESPHome proxies."
       }
     },
     "error": {
-      "invalid_url": "Enter a host name, IP address, or ws:// or wss:// URL ending in /bridge, without credentials, a query, or a fragment."
+      "invalid_url": "Enter a ws:// or wss:// Intiface address, not the old /bridge endpoint."
     },
     "abort": {
-      "already_configured": "IntiHA is already configured. Use its options to change settings.",
-      "invalid_discovery": "The IntiHA Engine app sent an invalid address. Restart the app or add IntiHA manually using its address."
+      "already_configured": "IntiHA is configured. Use Configure to change the server.",
+      "legacy_engine": "This is the retired 0.2 BLE bridge, not the native Intiface app.",
+      "invalid_discovery": "The app supplied an invalid server address."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "IntiHA options",
-        "menu_options": {
-          "behaviour": "Reconnect and timeouts",
-          "connection": "Engine connection"
-        }
-      },
-      "connection": {
-        "title": "Engine connection",
+        "title": "Native engine options",
+        "description": "Keep only one control application connected. Disable IntiHA to release the server to another app. The garage-proxy test is a separate read-only action.",
         "data": {
-          "engine_url": "Engine address"
-        },
-        "data_description": {
-          "engine_url": "Enter a host name or IP address, for example 192.168.0.10. A full ws:// or wss:// bridge URL also works."
-        }
-      },
-      "behaviour": {
-        "title": "Reconnect and timeouts",
-        "data": {
-          "auto_reconnect": "Automatically reconnect devices",
-          "control_timeout": "Stop manual controls after (seconds)",
-          "scan_duration": "Search duration (seconds)"
-        },
-        "data_description": {
-          "control_timeout": "Home Assistant movement commands expire after this time without a new movement command. External clients use their own negotiated heartbeat.",
-          "auto_reconnect": "Reconnect a device if its connection drops, using an available active Bluetooth proxy. New supported devices always connect automatically."
+          "engine_url": "Intiface server WebSocket address",
+          "auto_reconnect": "Reconnect to the server automatically",
+          "auto_scan": "Automatically discover devices through the server",
+          "control_timeout": "Stop after this many seconds without a fresh non-zero command"
         }
       }
     },
     "error": {
-      "invalid_url": "Enter a host name, IP address, or ws:// or wss:// URL ending in /bridge, without credentials, a query, or a fragment."
-    }
-  },
-  "entity": {
-    "switch": {
-      "enabled": {
-        "name": "Enabled"
-      }
-    },
-    "button": {
-      "search": {
-        "name": "Search devices"
-      },
-      "stop_all": {
-        "name": "Stop all"
-      },
-      "reconnect": {
-        "name": "Reconnect"
-      },
-      "stop": {
-        "name": "Stop"
-      }
-    },
-    "binary_sensor": {
-      "engine_connected": {
-        "name": "Engine connected"
-      },
-      "client_connected": {
-        "name": "External client connected"
-      },
-      "scanning": {
-        "name": "Searching"
-      },
-      "stop_unconfirmed": {
-        "name": "Stop unconfirmed"
-      },
-      "connected": {
-        "name": "Connected"
-      }
-    },
-    "number": {
-      "level": {
-        "name": "Vibration {number}"
-      }
-    },
-    "sensor": {
-      "status": {
-        "name": "Status",
-        "state": {
-          "disabled": "Disabled",
-          "connecting": "Connecting",
-          "ready": "Ready",
-          "stop_unconfirmed": "Stop unconfirmed"
-        }
-      },
-      "device_status": {
-        "name": "Status",
-        "state": {
-          "disabled": "Disabled",
-          "offline": "Offline",
-          "connected": "Connected",
-          "connecting": "Connecting",
-          "initialising": "Initialising",
-          "verifying_stop": "Checking stop command",
-          "retrying": "Retrying"
-        }
-      },
-      "engine_address": {
-        "name": "Engine address"
-      },
-      "control_owner": {
-        "name": "Control owner",
-        "state": {
-          "none": "None",
-          "home_assistant": "Home Assistant",
-          "external_client": "External client"
-        }
-      },
-      "connected_devices": {
-        "name": "Connected devices"
-      },
-      "discovered_devices": {
-        "name": "Discovered devices"
-      },
-      "active_proxies": {
-        "name": "Active Bluetooth adapters"
-      },
-      "last_error": {
-        "name": "Last error"
-      },
-      "battery": {
-        "name": "Battery"
-      },
-      "signal_strength": {
-        "name": "Last advertised signal strength"
-      },
-      "last_seen_via": {
-        "name": "Last seen via"
-      },
-      "last_seen": {
-        "name": "Last seen"
-      }
-    }
-  },
-  "services": {
-    "stop_all": {
-      "name": "Stop all",
-      "description": "Attempt to stop all reachable IntiHA devices. A disconnected device cannot receive a stop command.",
-      "fields": {
-        "entry_id": {
-          "name": "Integration",
-          "description": "Optional IntiHA configuration entry."
-        }
-      }
-    },
-    "scan": {
-      "name": "Search devices",
-      "description": "Refresh discovery and retry supported Bluetooth devices. New compatible devices also connect automatically while IntiHA is enabled.",
-      "fields": {
-        "entry_id": {
-          "name": "Integration",
-          "description": "Optional IntiHA configuration entry."
-        }
-      }
-    },
-    "reconnect": {
-      "name": "Reconnect",
-      "description": "Stop reachable devices and create a fresh engine connection. No movement values are replayed.",
-      "fields": {
-        "entry_id": {
-          "name": "Integration",
-          "description": "Optional IntiHA configuration entry."
-        }
-      }
+      "invalid_url": "Enter a ws:// or wss:// Intiface address, not the old /bridge endpoint."
     }
   }
 }

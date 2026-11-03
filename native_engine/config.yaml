@@ -1,0 +1,24 @@
+name: IntiHA Native Engine
+version: "0.3.0b1"
+slug: intiha_native
+description: Unmodified upstream Intiface Engine with native host Bluetooth; not an ESPHome proxy server
+url: https://github.com/s2n2/IntiHA
+arch:
+  - aarch64
+  - amd64
+startup: services
+boot: manual
+stage: experimental
+init: true
+homeassistant: "2026.10.0"
+host_network: true
+host_dbus: true
+hassio_api: true
+hassio_role: default
+discovery:
+  - intiha
+watchdog: http://[HOST]:12348/health
+options:
+  log_level: info
+schema:
+  log_level: list(error|warn|info|debug)

@@ -1,0 +1,4 @@
+# pip resolves a compatible test-plugin release for this exact HA baseline.
+# Use Python >=3.14.2; do not install this stack into the core-test environment.
+homeassistant==2026.10.4
+pytest-homeassistant-custom-component

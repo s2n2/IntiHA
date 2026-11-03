@@ -1,21 +1,59 @@
 stop_all:
+  name: Stop all
+  description: Ask the currently connected Intiface server to stop all devices. An acknowledgement is not physical motor-state feedback.
   fields:
     entry_id:
-      required: false
+      name: Config entry
       selector:
-        config_entry:
-          integration: intiha
+        text:
 scan:
-  fields:
-    entry_id:
-      required: false
-      selector:
-        config_entry:
-          integration: intiha
+  name: Search devices
+  description: Start the native Intiface server's own device scan. This does not scan HA proxies.
 reconnect:
+  name: Reconnect server
+  description: Stop, disconnect and reopen the server session without replaying movement.
+cancel_probe:
+  name: Cancel proxy probe
+  description: Cancel the read-only proxy probe and release its Bluetooth connection.
+list_proxy_paths:
+  name: List proxy paths
+  description: Return HA's registered ESPHome connection paths for one device without connecting or starting a scan.
   fields:
-    entry_id:
-      required: false
+    address:
+      name: Device Bluetooth address
+      required: true
       selector:
-        config_entry:
-          integration: intiha
+        text:
+probe_proxy:
+  name: Probe selected proxy
+  description: Read-only connection/pairing/service test. Disable IntiHA and other controllers first. Does not write motor commands, reset or unpair devices. Stops on the first failed cycle.
+  fields:
+    address:
+      name: Device Bluetooth address
+      required: true
+      selector:
+        text:
+    source:
+      name: Proxy source or unique name fragment
+      description: Use a source MAC from List proxy paths, or a unique name fragment such as garage. No automatic failover occurs in this test.
+      required: true
+      selector:
+        text:
+    pair:
+      name: Request pairing
+      default: true
+      selector:
+        boolean:
+    read_battery:
+      name: Read standard battery characteristic
+      default: false
+      selector:
+        boolean:
+    cycles:
+      name: Connect/disconnect test cycles
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 20
+          mode: box
