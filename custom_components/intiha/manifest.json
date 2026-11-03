@@ -2,18 +2,19 @@
   "domain": "intiha",
   "name": "IntiHA",
   "after_dependencies": [
-    "bluetooth",
-    "esphome",
     "hassio"
   ],
   "codeowners": [
     "@s2n2"
   ],
   "config_flow": true,
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
   "documentation": "https://github.com/s2n2/IntiHA",
   "integration_type": "hub",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/s2n2/IntiHA/issues",
   "requirements": [],
-  "version": "0.3.0b1"
+  "version": "0.3.0b2"
 }

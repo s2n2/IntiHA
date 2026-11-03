@@ -31,13 +31,13 @@ RUN set -eu; \
 
 FROM debian:bookworm-slim
 
-ARG BUILD_VERSION=0.2.4
+ARG BUILD_VERSION=0.3.0b2
 ARG BUILD_ARCH
 LABEL io.hass.version="${BUILD_VERSION}" \
       io.hass.type="app" \
       io.hass.arch="${BUILD_ARCH}" \
       org.opencontainers.image.title="IntiHA Engine" \
-      org.opencontainers.image.description="Buttplug server with a Home Assistant Bluetooth bridge" \
+      org.opencontainers.image.description="Buttplug server using Home Assistant Bluetooth proxies" \
       org.opencontainers.image.source="https://github.com/s2n2/IntiHA" \
       org.opencontainers.image.licenses="BSD-3-Clause"
 

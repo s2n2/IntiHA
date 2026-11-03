@@ -1,168 +1,371 @@
 # IntiHA
 
-**0.3.0b1: native Intiface reference implementation and garage-proxy qualification.**
+> **0.3.0b2 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. Do not install the native-only 0.3.0b1 app for this topology. The Proxy Engine never requires BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
 
-This is a breaking architectural preview, not another 0.2 connection patch.
-It replaces the custom Rust server and HA-to-engine BLE bridge with a thin
-Home Assistant client of an **unmodified upstream Intiface Engine**.
 
-> **Important scope:** Device control in this release uses the native Bluetooth
-> controller of the computer/phone running Intiface. ESPHome/Shelly proxies do
-> **not** become native adapters. HA/ESPHome proxy **motor control and roaming
-> are not implemented in this rebuild**. A separate, read-only HA proxy test is
-> included so that the garage ESP32 D1 Mini can be qualified without the old
-> Rust bridge, invented protocol packets or competing connection retries.
+**A plug-and-play Buttplug server using Home Assistant's Bluetooth coverage.**
 
-## What is included
+Start the engine, add the discovered integration, and turn on a compatible
+Bluetooth device. IntiHA finds it, connects it and creates its Home Assistant
+controls automatically. There are **no IntiHA tokens, device approval lists,
+MAC addresses or required search steps**.
 
-| Component | Purpose |
+Install the **HACS integration and IntiHA Engine app together**. The app runs
+the official Rust Buttplug server and device protocols. The integration
+connects them to Home Assistant's Bluetooth network and provides the HA
+controls and sensors. Home Assistant Container users can run the same engine
+with Docker Compose.
+
+**Version 0.3.0b2 - proxy-native Bluetooth transport beta.**
+The integration now requests pairing for a Bond identified by the engine's
+`wevibe-8bit` profile, and learns other devices' requirements from explicit
+ATT authentication/encryption errors. It does not replay failed movement
+commands. The existing real stop-write verification still gates controls.
+One backend connection call is allowed per engine-owned attempt, rather than
+letting the retry helper silently make up to nine transient-error attempts.
+The Engine app may remain on **0.2.4 or 0.2.5**. No engine protocol, ESPHome
+configuration or Wi-Fi changes are needed for this patch. Physical Bond
+validation and multi-proxy roaming are still outstanding. See the
+[security and specification review](docs/BLUETOOTH_SECURITY_REVIEW.md).
+
+This is an independent project, not an official Intiface or Home Assistant
+product.
+
+## Version history
+
+HACS shows this README on the integration's information page. The full history
+is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
+[GitHub release notes](https://github.com/s2n2/IntiHA/releases).
+
+| Version | What changed |
 |---|---|
-| HACS integration, `custom_components/intiha` | Standard Buttplug v3 WebSocket client. On/off, discovery, server reconnect, dynamic devices, vibration sliders, stop and status. |
-| New HA app, `native_engine`, slug `intiha_native` | Builds unmodified published `intiface-engine` **4.1.0** with its locked dependencies; uses native host Bluetooth through D-Bus. |
-| Optional proxy qualification actions | Select exactly one HA-managed ESPHome proxy, request pairing, discover services, optionally read standard battery, then disconnect. No motor writes. |
-| Tests and CI | Local protocol/core tests; separate CI jobs for the actual upstream engine image and Home Assistant runtime. Physical device qualification remains required. |
+| **0.2.7** | Request BLE pairing for identified Bond / learned ATT security requirements; prevent the hidden nine-attempt retry loop; retain verified stops and no command replay. HACS-only runtime update. |
+| **0.2.6** | Remove automatic Bluetooth scan sweeps introduced in 0.2.5; retain manual Search and automatic advertisement discovery; improve scan deduplication. HACS only. |
+| **0.2.5** | Make Search perform an actual HA Bluetooth active sweep; add bounded periodic discovery for devices not visible from passive advertisements. HACS-only runtime change; the 0.2.4 Engine is compatible. |
+| **0.2.4** | Separate driver stop-packet generation from real GATT verification; atomic write-and-cache acknowledgement; serialised connection attempts; useful connection-stage diagnostics. Update both HACS and the Engine app. |
+| **0.2.3** | Restore control for verified classic We-Vibe devices when the upstream stopped-state command produces no Bluetooth writes; retain stop-on-disconnect and add detailed diagnostics. |
+| **0.2.2** | Fix Docker installation without relying on a separately published `engine/licenses/` folder; collect upstream dependency licences during the Rust build. |
+| **0.2.1** | Fix IntiHA Engine app installation by including the full dependency-licence directory in the GitHub repository; add release-history visibility and build checks. No configuration changes. |
+| **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
+| **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
 
-The app intentionally pins a known, documented upstream CLI release, **not a
-claim to be the latest Intiface release**. The engine binary, protocols and
-native Bluetooth manager are not patched. See [sources](docs/SOURCES.md) and
-[validation](docs/VALIDATION.md) for the exact scope of verification.
+## Updating to 0.2.7
 
-## Quick start: use your existing phone or computer
+Update the **IntiHA HACS integration** and restart Home Assistant. The
+**IntiHA Engine app does not need rebuilding**; versions 0.2.4 and 0.2.5
+remain compatible. The device page's Firmware value reports the engine
+version; check HACS for the integration version.
 
-1. Stop the **old IntiHA Engine** app and disable its automatic start/watchdog.
-   Also stop any old Intiface/Buttplug HA integration that would claim the server.
-2. Run normal Intiface Central on your phone or computer. Enable its WebSocket
-   server on your trusted LAN. Use the server address it advertises, typically
-   `ws://PHONE_OR_COMPUTER_IP:12345`. Keep the phone on the same network as HA.
-   A localhost-only listener is not reachable from another machine.
-3. Install this release through HACS as a custom Integration repository and
-   restart Home Assistant. A preview release may require selecting beta releases
-   in HACS. This package has not been uploaded to GitHub by its authoring session.
-4. Add **IntiHA** in Devices & services, or choose **Configure** on the existing
-   migrated entry, and enter that ordinary WebSocket address. No tokens or
-   approval lists are requested. Turn **Enabled** on after migration.
-5. Turn the device on in its normal connection mode. Native Intiface performs
-   discovery and protocol initialisation. HA requests an ordinary stop before
-   making the new device's vibration controls available.
+For the first encrypted connection, the peripheral may need its normal
+pairing mode. Keep other phone/remote controllers disconnected during this
+initial test. A proxy must support BLE pairing as well as active GATT
+connections. Unsupported pairing fails with a specific error; the integration
+does not silently fall back to an unencrypted control path.
 
-This route needs no new Bluetooth hardware and no app build on Home Assistant.
-The phone/computer, not the garage proxy, performs Bluetooth communication.
-Use it to establish a baseline with the actual Bond before testing roaming.
+The device Status entity has a `ble_pairing_required` attribute. This means
+IntiHA will request pairing on its next connection. It is **not** a live
+"encrypted" sensor, and does not enable controls by itself. Controls still
+require completed device initialisation and the real stop write.
 
-## Alternatively: new native HA app
+The Git patch targets the supplied 0.2.6 source. The replacement-file ZIP can
+be overlaid at the repository root. Do not copy the archive into
+`custom_components/intiha` as an extra nested folder.
 
-Add this GitHub repository to the Home Assistant App Store and install
-**IntiHA Native Engine**. This is a NEW app, not an update to `intiha_engine`.
-It needs a real Bluetooth controller accessible to the HA host's BlueZ service.
-A VM needs a correctly passed-through native controller. An ESPHome Wi-Fi
-proxy, even a normal ESP32 D1 Mini, does not satisfy this requirement.
+## Updating from 0.2.5
 
-Start the app with its default settings. Accept the Supervisor-discovered
-integration if offered. Existing entries are not silently reconfigured: use
-**Configure** and `ws://HOME_ASSISTANT_IP:12347`. The separate port deliberately
-avoids confusion with the old engine. The app has no web interface.
+Install **IntiHA 0.2.6** through HACS and restart Home Assistant. The
+**IntiHA Engine app does not need an update**, and can remain on 0.2.4 or
+0.2.5. Engine protocol and Bluetooth stop handling are unchanged. Normal
+advertisements still discover supported devices automatically. If a device
+needs an active scan to reveal its services or name, use **Search devices**;
+IntiHA will not run active sweeps automatically while trying to establish
+continuous GATT connections.
 
-The app builds upstream 4.1.0 at installation; the Docker build has not been
-executed in the authoring environment. Run the included image-build CI before
-publishing. [Native app documentation](native_engine/DOCS.md) describes ports,
-permissions, diagnostics and the native-adapter limitation.
+If all IntiHA controls and diagnostics show **unavailable**, first check
+Settings > Devices & services > IntiHA and Home Assistant **Core** logs for a
+config-entry or platform exception. Engine BLE errors alone should not make
+master controls unavailable. Only then investigate Bluetooth transport.
 
-## Garage ESP32 D1 Mini: independent test
+## Updating from 0.2.4
 
-Leave your working ESPHome/Wi-Fi configuration unchanged. Turn IntiHA's
-**Enabled** off and stop other controllers connected to the target device.
-The diagnostic may establish a Bluetooth bond but never unpairs or sends motor
-commands. It requires HA's ESPHome integration and a proxy with pairing support.
+Install the **0.2.5 HACS integration** and restart Home Assistant. The Engine
+may remain on 0.2.4; its bridge protocol has not changed. The repo also bumps
+Engine packaging metadata to 0.2.5 for a consistent GitHub release, but
+rebuilding the Engine is **not required** for this discovery hotfix. Search
+now starts a real active sweep through Home Assistant's existing adapters.
+If a peripheral still does not appear, check whether it advertises in the
+Bluetooth network map and whether Buttplug supports its protocol. Discovery
+and connection are separate operations.
 
-In Developer tools -> Actions, replace the example address below with your
-device's actual Bluetooth address, then list its paths:
+## Updating from 0.2.3
 
-```yaml
-action: intiha.list_proxy_paths
-data:
-  address: "AA:BB:CC:DD:EE:FF"
+Stop the Engine app first. Update the HACS integration to **0.2.4** and restart
+Home Assistant, then update/rebuild and start **IntiHA Engine 0.2.4**. A new
+`prepare_stop` bridge operation requires both components; updating the app
+alone is insufficient. No ESPHome, Wi-Fi, token or device-selection changes
+are required. The update does not remove existing device entities.
+
+## Quick setup on Home Assistant OS
+
+Requirements: Home Assistant **2026.10 or later**, HACS, an **amd64 or aarch64**
+HA OS host, and an active ESPHome Bluetooth proxy or supported local adapter.
+
+1. In **HACS → Custom repositories**, add
+   `https://github.com/s2n2/IntiHA` as an **Integration**. Install IntiHA and
+   restart Home Assistant.
+2. Add the same repository under **Settings → Apps → App store → Repositories**.
+   Install **IntiHA Engine** and press **Start**. Keep the defaults; there are
+   no credentials to create or copy. Enable Start on boot and Watchdog if
+   desired. The first install builds the Rust engine and can take several
+   minutes on a small host.
+3. Open **Settings → Devices & services** and accept the discovered **IntiHA**
+   integration. Its confirmation has no configuration fields. If you use
+   **Add integration → IntiHA** instead, it also checks for the running app.
+4. Turn on a supported Bluetooth device in its normal connection mode.
+   IntiHA connects it automatically and adds its controls and status sensors.
+
+A new installation starts enabled, with automatic reconnection on. The master
+switch remembers your choice across restarts. A device powered on later is
+also found automatically; you do not have to reload the integration.
+
+If the app cannot be discovered, the fallback setup asks only for the engine
+host, such as `192.168.0.10`. A full bridge URL such as
+`ws://192.168.0.10:12346/bridge` also works. Setup remains available while the
+engine is offline and retries the connection in the background.
+
+### Connect a Buttplug application
+
+Use the Home Assistant machine's IP address:
+
+```text
+ws://192.168.0.10:12345
 ```
 
-Then select the garage proxy by its returned source MAC (best), or by the unique
-name fragment `garage`:
+For applications with separate fields, enter the same IP and port **12345**.
+No token, query parameter or custom header is needed. The client and bridge
+ports accept connections without authentication on your local network.
+
+The server uses the official Buttplug serializer and protocol engine,
+negotiating protocol versions 0–4. One external application controls devices
+at a time. While it is connected, HA movement sliders are unavailable;
+HA status and stop controls remain available. Disconnect the application to
+return control to Home Assistant.
+
+## What happens automatically
+
+| Feature | Behaviour |
+|---|---|
+| Engine discovery | The HA app announces its internal address through Supervisor; accept one confirmation in HA. |
+| Device discovery | Continuous use of HA's shared Bluetooth advertisements while enabled. The official Buttplug profiles identify compatible devices. |
+| Device connection | Every recognised compatible device is connected when an active Bluetooth path and a connection slot are available. |
+| HA entities | Device status, stop button and sensors appear on discovery; supported vibration controls appear after identification. No reload is needed. |
+| Reconnection | Failed links are retried with bounded backoff. HA chooses an available connectable path for each new link. |
+| Restart | Remembered device entities and the master on/off preference return. Motor levels are never restored. |
+| Device names | Actual device names from the engine, with any custom HA name preserved. |
+| Unsupported peripherals | Ignored by the upstream device matcher; IntiHA does not connect to every Bluetooth peripheral. |
+
+**Search devices** remains available as a refresh/retry button. Normal
+discovery continues without it. If you disable automatic reconnection in
+options, newly found devices still connect once; Search explicitly retries
+previously attempted devices.
+
+## Controls, sensors and optional settings
+
+The integration creates an IntiHA hub device and a device for each recognised
+Bluetooth address. Device identities are stable when the Bluetooth path
+changes. Entity IDs depend on HA naming and any changes you make.
+
+| Control or sensor | Meaning |
+|---|---|
+| Enabled | Master on/off; available even while the engine is offline. Turning it off stops and disconnects owned devices. |
+| Search devices | Refresh discovery and retry available devices now. |
+| Reconnect | Start a fresh engine session and refresh Bluetooth routing. |
+| Stop all / device stop | Attempt the driver's stop commands, clear old commands and release the affected links. |
+| Vibration 1, 2, … | Percent command for each supported vibration feature. The value is the last HA command, not measured motor speed. |
+| Status / engine connected | Disabled, connecting, ready or stop unconfirmed; ready describes the bridge, not every device. |
+| Client connected / control owner | Whether an external Buttplug application owns movement control. |
+| Connected devices | Devices identified and ready for control, with stop plans installed. |
+| Active Bluetooth adapters | Connectable HA scanners, including active proxies and local adapters. This is not a free-slot count. |
+| Device connected / device status | Whether controls are ready, plus connecting, initialising, verifying stop, retrying or offline stages. The status attributes retain the last error. |
+| Battery | Actual reading where the upstream profile supports it; otherwise unknown. |
+| Signal strength / last seen / last seen via | Latest advertisement information. The advertisement source is not necessarily the active control path. |
+| Stop unconfirmed / last error | A failure or uncertain stop remains visible instead of being reported as success. |
+
+The defaults need no adjustment. Optional settings are under **Configure →
+Reconnect and timeouts**: automatic reconnect, explicit search duration
+(5–120 seconds, default 30) and the HA manual-control timeout (15–600 seconds,
+default 60). The timeout stops manual output when no new movement command
+arrives. The engine address can also be changed under Configure.
+
+Actions are available in **Developer tools → Actions**:
 
 ```yaml
-action: intiha.probe_proxy
-data:
-  address: "AA:BB:CC:DD:EE:FF"
-  source: garage
-  pair: true
-  cycles: 3
-  read_battery: false
+action: intiha.stop_all
 ```
 
-The name must uniquely match. It refuses to fall back to a different scanner.
-It reports the actual source, library/ESPHome versions, service handles, elapsed
-time, failure stage and cleanup outcome. The first failure ends the test. Run
-`intiha.cancel_probe` to cancel; the result also appears in the Proxy probe result
-sensor's `report` attribute.
+```yaml
+action: intiha.scan
+```
 
-**`passed_connection_test_only` does not mean motor control has passed.** The
-report always keeps `protected_motor_write_verified: false`: the original ATT
-15 failure was on a protected motor write, which this read-only test does not
-exercise. Pairing success is not independent live-encryption attestation.
+```yaml
+action: intiha.reconnect
+```
 
-This test uses HA's registered remote-client connector and checks its backend
-source before connecting. These partly internal APIs are capability-checked;
-unsupported installed versions fail closed instead of silently rerouting.
-For the garage proxy, record the actual **ESP-IDF version from its boot log**.
-Do not infer it from the previously tested C3. See [qualification](docs/QUALIFICATION.md).
+Each accepts an optional `entry_id`. One IntiHA entry is supported per HA
+instance.
 
-## Behaviour and limitations
+## Bluetooth coverage and moving between rooms
 
-- Master controls and diagnostics load even if the server is offline. Per-device
-  movement controls remain disabled until that session's standard stop is acknowledged.
-- Native discovery is automatic; no HA-wide active scan sweeps are added.
-  Each device gets an independent preparation task, so one stalled device does
-  not delay another's controls.
-- Disconnects invalidate indices, requests and queued targets. Reconnect starts
-  at zero, never replays movement, and requests another standard stop.
-- Each non-zero HA movement request has a default 60-second control timeout
-  (Configure: 5-600 seconds). A protocol heartbeat is independent of this timer.
-  The supplied app configures a 10-second upstream heartbeat. External servers
-  may disable it; the diagnostic reports the actual setting, including zero.
-- A successful stop acknowledgement is NOT physical motor-state feedback.
-  No software can deliver a stop over a radio link that has already failed.
-- Only advertised vibration features and standard battery reads are exposed in
-  this preview. Rotation, linear motion, manufacturer-native patterns, raw writes
-  and shared/external command routing are not implemented.
-- One server/control owner at a time. Turn HA's master off before using another
-  Buttplug client against the same server. No multi-client mixer is claimed.
-- Standard v3 inventory does not provide a universal stable Bluetooth address.
-  Identities use the server display name and capabilities, not DeviceIndex.
-  Give identical devices distinct display names in the upstream configuration.
-  Simultaneous ambiguous twins are disabled rather than silently misidentified.
-- No client tokens. The app's WebSocket is accessible on the LAN. Do not expose
-  it to the internet or untrusted guests. Supervisor's automatic internal token
-  is only used for app discovery, never requested from the user or passed to
-  the engine subprocess.
+**Active ESPHome Bluetooth proxies and supported local adapters can control
+devices. Shelly Bluetooth proxies provide advertisements only; they cannot
+carry the active GATT control connection.** Shelly's active-scanning setting
+does not change that limitation. See the
+[HA Bluetooth documentation](https://www.home-assistant.io/integrations/bluetooth/),
+[Shelly documentation](https://www.home-assistant.io/integrations/shelly/#bluetooth-support)
+and [ESPHome proxy guide](https://esphome.io/components/bluetooth_proxy/).
 
-## Updating from 0.2.x
+```mermaid
+flowchart TD
+    Client["Buttplug application"] --> Engine["IntiHA Engine app"]
+    HA["IntiHA HACS integration"] <--> Engine
+    HA <--> ESP["ESPHome active proxies"]
+    HA <--> USB["Local Bluetooth adapter"]
+    Shelly["Shelly advertisements"] --> HA
+    ESP <--> Device["Compatible devices"]
+    USB <--> Device
+```
 
-**Back up first. Read [MIGRATION](docs/MIGRATION.md).** The old `/bridge` URL is
-not a standard Buttplug client endpoint. Migration disables control and asks for
-a native server address. Device-specific entity IDs will change; the old system's
-Bluetooth-address IDs cannot honestly be retained using only v3 inventory.
-Never run old and new controllers against the same peripheral simultaneously.
+Use active proxies in the rooms you use, with overlapping coverage between
+rooms and available connection slots. ESPHome defaults to three active
+connections per proxy, shared with other HA devices. Ethernet proxies can
+reduce Wi-Fi/Bluetooth contention. Avoid obstructing antennas with metal.
 
-## Version history (also visible in HACS)
+For an existing supported ESP32 device, merge this into its ESPHome
+configuration without duplicating existing sections:
 
-| Version | Change |
+```yaml
+esp32_ble_tracker:
+
+bluetooth_proxy:
+  active: true
+```
+
+A working Bluetooth connection stays on its current adapter. If the link
+breaks while you move, IntiHA establishes a fresh connection through HA's
+available paths. A healthy connection resets retry backoff so earlier room
+changes do not cause increasingly long reconnect delays. Radio recovery
+still depends on advertisements, coverage and free proxy slots.
+
+Reconnection starts stopped and waits for a fresh command. IntiHA cannot
+provide uninterrupted Bluetooth handover. It ends the external control
+session when a ready device's link is lost, preventing old buffered commands
+from reaching a replacement connection. The client must support reconnecting
+to the server and ordinary device removal/addition.
+
+## Stop handling and device compatibility
+
+HA caches the actual stop writes produced by the official device driver
+before enabling controls. If the engine disappears, HA attempts these cached
+writes and disconnects. Explicit stop also closes the old Bluetooth link to
+prevent queued movement reaching it. With automatic reconnect enabled, the
+device returns stopped after a short pause. HA Stop all ends the current
+external control session; reconnect the client for a new session.
+
+The classic upstream We-Vibe initializer briefly requests a non-zero motor
+level before stopping. IntiHA replaces only that exact first classic We-Vibe
+packet with its stop packet. The exception is tested in software and still
+needs confirmation on actual models. It does not change user commands or
+claim identical behaviour for other We-Vibe protocol families.
+
+IntiHA uses upstream BLE profiles. Some devices supported by desktop Intiface
+may require pairing, bonding or Bluetooth features unavailable through a
+particular proxy. USB, serial, HID and network-only devices are outside this
+BLE bridge. HA provides vibration sliders; other actuator types supported by
+the official engine remain available to Buttplug applications. Native vendor
+pattern lists are not added by this release.
+
+A stop cannot be delivered through an already broken radio link. A failed
+stop remains visible, and a fresh connection must be ready and stopped before
+control resumes. Physical device and room testing are documented in
+[docs/HARDWARE_TESTING.md](docs/HARDWARE_TESTING.md).
+
+## Home Assistant Container
+
+Install the same integration through HACS or copy `custom_components/intiha`
+into your HA configuration. On the Docker host:
+
+```sh
+cd engine
+docker compose up -d --build
+```
+
+No `.env` file or secrets are needed. Add the integration using the Docker
+host's IP address. Clients use `ws://DOCKER_HOST_IP:12345`. The container uses
+HA's Bluetooth transport and needs no direct host Bluetooth access.
+
+See [engine/DOCS.md](engine/DOCS.md) for app/container details and
+[engine/BRIDGE_PROTOCOL.md](engine/BRIDGE_PROTOCOL.md) for the wire protocol.
+
+## Upgrading from 0.1.0
+
+Update both the integration and engine to 0.2.0. The HA configuration migration
+removes obsolete credentials and selected-device settings. Saved device
+metadata, useful connection/reconnect settings and the master on/off choice
+are retained. Change existing client URLs to the plain address above. No
+replacement credentials or device-selection step is needed.
+
+## Troubleshooting
+
+| Symptom | Check |
 |---|---|
-| **0.3.0b1** | Architectural rebuild: standard native Intiface client, unmodified upstream app, independent selected-proxy diagnostic, per-device tasks, no movement replay. Preview: no HA-proxy motor control. |
-| 0.2.7 | Prior custom bridge: pairing policy and nested-retry changes; not a proven hardware resolution. |
-| 0.2.6 | Disabled automatic HA-wide active scan sweeps; retained manual search. |
-| 0.2.5 | Added active discovery sweeps; later rolled back after reported regressions. |
-| 0.2.4 | Reworked custom stop preparation and connection handling. Brief ready states were observed, not sustained reliability. |
-| 0.2.3 | Earlier We-Vibe stop preparation change. |
-| 0.2.2 / 0.2.1 | Container licence packaging and release-history fixes. |
-| 0.2.0 | Tokenless setup and automatic device enrolment. |
-| 0.1.0 | Original custom HA/Rust transport prototype. |
+| No discovered integration card | Install the integration first and restart HA, then start the engine app. Manual Add also checks Supervisor announcements; host entry is the fallback. |
+| Integration loaded, engine disconnected | App running and reachable bridge address/port 12346. |
+| Shelly sees a device but it cannot connect | Add an active ESPHome proxy or local adapter in that area. |
+| Device does not connect automatically | Device on and advertising, IntiHA enabled, supported upstream profile, active proxy in range and a free slot. Close any phone app already holding its Bluetooth connection. |
+| Stops after a minute with HA sliders | Default manual-control timeout is 60 seconds; adjust in options if needed. |
+| HA sliders unavailable | Device offline/not yet ready, master off, or an external application currently owns control. |
+| Battery unknown | Upstream profile may not provide a battery read. |
+| Pause when changing rooms | Bluetooth needs a fresh connection. Check overlapping active-proxy coverage and client reconnect support. |
+| App fails to start | Inspect app logs and check that the mapped ports are free. |
+| Browser application cannot connect | Some HTTPS pages block remote plain WebSockets. Use a client-supported local connector or a correctly configured `wss://` endpoint. |
 
-See [CHANGELOG](CHANGELOG.md), [architecture](docs/ARCHITECTURE.md),
-[publishing](docs/PUBLISHING.md), and [validation](docs/VALIDATION.md).
+Downloaded diagnostics omit engine host, Bluetooth addresses, device names
+and output values.
+
+## Development and verification
+
+```sh
+uv venv --python 3.14.8 .venv
+uv pip install --python .venv/bin/python -r requirements-dev.txt
+cargo build --locked --manifest-path engine/Cargo.toml
+INTIHA_REQUIRE_SYSTEM_TESTS=1 .venv/bin/pytest
+.venv/bin/ruff check custom_components tests
+.venv/bin/ruff format --check custom_components tests
+cargo test --locked --manifest-path engine/Cargo.toml --all-targets
+cargo clippy --locked --manifest-path engine/Cargo.toml --all-targets -- -D warnings
+cargo fmt --manifest-path engine/Cargo.toml --all -- --check
+```
+
+Tests exercise automatic discovery, dynamic HA entities, tokenless client
+connections, startup and shutdown, stop ordering, failed operations, bounded
+requests, stale commands, upstream protocol translation and controller
+ownership. Cross-process tests run the compiled engine with real Home
+Assistant and a simulated radio. See [docs/VALIDATION.md](docs/VALIDATION.md)
+for executed checks and their limits.
+
+GitHub Actions also validates HACS/hassfest metadata and builds native amd64
+and aarch64 app images. Version tags prepare draft releases after validation.
+See [docs/PUBLISHING.md](docs/PUBLISHING.md) for publishing the source archive.
+
+## Upstream references
+
+- [HA Bluetooth developer API](https://developers.home-assistant.io/docs/bluetooth/)
+- [Supervisor app discovery](https://contributors.home-assistant.io/apps/supervisor-api/services/)
+- [Buttplug source and device profiles](https://github.com/buttplugio/buttplug)
+- [Buttplug protocol specification](https://buttplug.io/docs/spec/)
+- [We-Vibe protocol documentation](https://buttplug.io/stpihkal/protocols/we-vibe/)
+- [Buttplug ping](https://buttplug.io/docs/dev-guide/cookbook/connections/ping/)
+
+IntiHA is BSD-3-Clause licensed. Buttplug is copyright Nonpolynomial Labs LLC
+and contributors and is also BSD-3-Clause licensed. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
