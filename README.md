@@ -1,6 +1,6 @@
 # IntiHA
 
-> **0.3.0b4 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
+> **0.3.0b5 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
 
 
 **A plug-and-play Buttplug server using Home Assistant's Bluetooth coverage.**
@@ -16,7 +16,7 @@ Assistant owns BLE scanning, adapter selection and GATT through its connectable
 adapters and ESPHome proxies. The Rust engine owns Buttplug protocol matching,
 device drivers and the external Buttplug server.
 
-**Version 0.3.0b4 - server master-switch beta.**
+**Version 0.3.0b5 - server master-switch beta.**
 The Home Assistant **Server enabled** switch now gates the complete user-facing
 Intiface service. When it is off, IntiHA stops outputs, discovery and BLE
 sessions, invalidates any external controller, and rejects new Buttplug
@@ -50,7 +50,8 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
-| **0.3.0b4** | Make the HA master switch gate the complete user-facing Intiface server; Off rejects external clients and tears down BLE/discovery while retaining only the HA control bridge. |
+| **0.3.0b5** | Build repair for 0.3.0b4: valid Cargo SemVer internally (`0.3.0-b5`) while IntiHA/HA report `0.3.0b5`; master-switch behaviour unchanged. |
+| **0.3.0b4** | Master-switch build: Off rejects external clients and tears down BLE/discovery while retaining only the HA control bridge. Superseded because its Cargo package version was invalid. |
 | **0.3.0b3** | Forward all HA BLE candidates to Buttplug's official matcher; external clients can command existing proxy sessions and release control without forcing a BLE reconnect. |
 | **0.3.0b2** | Restore the Home Assistant / ESPHome proxy transport as the production backend; no local Bluetooth adapter required. |
 | **0.3.0b1** | Native-engine experiment requiring a local Bluetooth adapter; superseded for proxy-only installations. |
@@ -64,10 +65,10 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
 
-## Updating to 0.3.0b4
+## Updating to 0.3.0b5
 
 Update **both** the IntiHA HACS integration and **IntiHA Proxy Engine** to
-0.3.0b4, then restart Home Assistant and the Engine. Do not run the native-only
+0.3.0b5, then restart Home Assistant and the Engine. Do not run the native-only
 0.3.0b1 app alongside the Proxy Engine. No Bluetooth dongle is required.
 
 After restart, the IntiHA device should report **Bluetooth transport: Home

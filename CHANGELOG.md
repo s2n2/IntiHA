@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0b5
+
+- Fix Rust/Cargo package versioning: Cargo now uses SemVer-valid `0.3.0-b5` while Home Assistant and IntiHA continue to report `0.3.0b5`.
+- Supersedes the unbuildable 0.3.0b4 package without changing the server master-switch behaviour.
+
 ## 0.3.0b4
 
 Master switch now gates the whole user-facing Intiface server.
