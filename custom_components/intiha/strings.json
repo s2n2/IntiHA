@@ -139,7 +139,10 @@
         }
       },
       "connected_devices": {
-        "name": "Connected devices"
+        "name": "Currently connected"
+      },
+      "disconnected_devices": {
+        "name": "Disconnected devices"
       },
       "discovered_devices": {
         "name": "Discovered devices"

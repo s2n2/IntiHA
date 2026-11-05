@@ -121,7 +121,7 @@ this IntiHA instance, for example a nearby neighbour's device.
 
 ## Bounded shutdown
 
-0.3.0b8 bounds Home Assistant stop-all locking, Rust shutdown cleanup and the
+0.3.0b9 bounds Home Assistant stop-all locking, Rust shutdown cleanup and the
 container entrypoint wait. Supervisor updates therefore cannot wait forever on
 a wedged BLE/admin operation. When upgrading from an older build, switching the
 server off before the first app update remains the cleanest path because the old
@@ -129,4 +129,4 @@ container itself does not yet contain these new bounds.
 
 ## Device identity
 
-0.3.0b8 stores a best-known specific name separately from transient advertisements and Buttplug inventory labels. Home Assistant scan-response local names are preferred when available; otherwise IntiHA may request a bounded address-targeted active scan, and after connection may read the standard BLE Device Name characteristic. Generic Buttplug labels never overwrite a learned specific name.
+0.3.0b9 stores a best-known specific name separately from transient advertisements and Buttplug inventory labels. Home Assistant scan-response local names are preferred when available; otherwise IntiHA may request a bounded address-targeted active scan, and after connection may read the standard BLE Device Name characteristic. Generic Buttplug labels never overwrite a learned specific name.

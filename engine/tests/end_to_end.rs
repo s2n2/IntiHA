@@ -406,6 +406,92 @@ async fn external_v3_client_can_drive_existing_proxy_device_and_release_it_witho
     h.finish().await;
 }
 
+
+#[tokio::test]
+async fn external_stop_is_a_barrier_and_cannot_bounce_back_to_previous_output() {
+    let h = Harness::start().await;
+    let device = h.ready().await;
+    let connection_id = device["connection_id"].as_str().unwrap().to_owned();
+    let (mut socket, _) = connect_async(&h.client_url).await.unwrap();
+    socket
+        .send(Message::Text(
+            json!([{"RequestServerInfo":{"Id":1,"ClientName":"Stop barrier test","MessageVersion":3}}])
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    loop {
+        match socket.next().await.unwrap().unwrap() {
+            Message::Text(t) if serde_json::from_str::<Value>(&t).unwrap()[0].get("ServerInfo").is_some() => break,
+            Message::Ping(v) => socket.send(Message::Pong(v)).await.unwrap(),
+            _ => {}
+        }
+    }
+
+    socket
+        .send(Message::Text(
+            json!([{"ScalarCmd":{"Id":2,"DeviceIndex":device["DeviceIndex"],"Scalars":[{"Index":0,"Scalar":1.0,"ActuatorType":"Vibrate"}]}}])
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    loop {
+        match socket.next().await.unwrap().unwrap() {
+            Message::Text(t) => {
+                let value = serde_json::from_str::<Value>(&t).unwrap();
+                if value[0].get("Ok").is_some() { break; }
+                if value[0].get("Error").is_some() { panic!("100% output failed: {value}"); }
+            }
+            Message::Ping(v) => socket.send(Message::Pong(v)).await.unwrap(),
+            _ => {}
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if h.writes.lock().unwrap().iter().any(|write| {
+                write["data"].as_array().is_some_and(|data| {
+                    data != &vec![json!(15),json!(0),json!(0),json!(0),json!(0),json!(0),json!(0),json!(0)]
+                })
+            }) { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("100% command must reach GATT before the stop test");
+
+    socket
+        .send(Message::Text(json!([{"StopAllDevices":{"Id":3}}]).to_string().into()))
+        .await
+        .unwrap();
+    loop {
+        match socket.next().await.unwrap().unwrap() {
+            Message::Text(t) => {
+                let value = serde_json::from_str::<Value>(&t).unwrap();
+                if value[0].get("Ok").is_some() { break; }
+                if value[0].get("Error").is_some() { panic!("StopAllDevices failed: {value}"); }
+            }
+            Message::Ping(v) => socket.send(Message::Pong(v)).await.unwrap(),
+            _ => {}
+        }
+    }
+
+    // The response is not sent until the verified physical stop has been put
+    // last on the BLE path. Give any protocol keepalive several update periods
+    // to prove it cannot restore the old 100% state afterwards.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let writes = h.writes.lock().unwrap().clone();
+    assert_eq!(
+        writes.last().unwrap()["data"],
+        json!([15, 0, 0, 0, 0, 0, 0, 0]),
+        "no queued/keepalive output may run after StopAllDevices returns"
+    );
+    let session = h.app.bridge.session(&connection_id).unwrap();
+    assert!(session.connected.load(Ordering::SeqCst));
+    assert!(session.ready.load(Ordering::SeqCst));
+    socket.close(None).await.unwrap();
+    h.finish().await;
+}
+
 #[tokio::test]
 async fn reconnect_uses_new_session_and_keeps_output_stopped() {
     let h = Harness::start().await;

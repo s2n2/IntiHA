@@ -1,15 +1,22 @@
 # Changelog
 
-## 0.3.0b8
+## 0.3.0b10
 
-Persistent device identity recovery and naming repair.
+- Fix external-client stop semantics so Buttplug clears its internal output/keepalive state before IntiHA sends the verified physical BLE stop.
+- Add a per-session output generation barrier so queued movement/keepalive writes created before a stop cannot run after the stop and restart a device at the previous level.
+- If the official stop state cannot be cleared, retire the affected BLE session after sending the verified stop rather than risk latent output.
+- Add separate Currently connected and Disconnected devices summary sensors with device names/addresses in attributes.
+- Retain b9 prebuilt GHCR app images, persistent device names, and per-device Connect to this device policy.
 
-- Keep a separate persistent **best-known device name** by Bluetooth address. Once a useful identity such as `Bond` is learned it survives restarts, app updates and later generic Buttplug inventory names.
-- Prefer Home Assistant/Bleak scan-response `local_name` over an address-like BLE device name.
-- When a supported device is otherwise nameless/generic, request a bounded address-targeted active scan so devices that reveal their name only in a scan response can be identified.
-- After GATT connect, opportunistically recover the standard BLE Device Name characteristic when available and feed that identity back into Home Assistant. Failure to read the optional name never blocks control.
-- Never downgrade a learned specific identity to generic labels such as `WeVibe Device` or `WeVibe 8-bit Device`; generic devices still receive a stable protocol/address suffix until a better name is learned.
-- Retain b7's persistent **Connect to this device** switch, engine-side deny list, Bluetooth registry connection metadata, and bounded shutdown/update cleanup.
+## 0.3.0b9
+
+Prebuilt app images and reliable Supervisor updates, retaining the b8 identity fixes.
+
+- Publish amd64 and aarch64 Engine images to `ghcr.io/s2n2/intiha-engine` on pushes to `main`, then publish a multi-architecture manifest tagged with the Home Assistant app version.
+- Add the app `image:` setting so Supervisor pulls a prepared container instead of compiling the Rust engine locally during every update.
+- Add a 30 second Docker action timeout so normal shutdown has enough time to complete cleanly.
+- Fix the release workflow's Cargo/Home Assistant version comparison (`0.3.0-b9` internally vs `0.3.0b9` externally).
+- Retain b8 persistent best-known device names, active-scan name recovery, Device Name GATT recovery, and the per-device **Connect to this device** switch.
 
 ## 0.3.0b6
 

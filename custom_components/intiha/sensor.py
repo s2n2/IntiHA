@@ -19,6 +19,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             "transport",
             "control_owner",
             "connected_devices",
+            "disconnected_devices",
             "discovered_devices",
             "active_proxies",
             "last_error",
@@ -99,6 +100,7 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
             "transport": "Home Assistant Bluetooth / ESPHome proxies",
             "control_owner": coordinator.owner,
             "connected_devices": sum(device.connected for device in coordinator.devices.values()),
+            "disconnected_devices": sum(not device.connected for device in coordinator.devices.values()),
             "discovered_devices": len(coordinator.discovered),
             "active_proxies": coordinator.active_proxy_count,
             "last_error": coordinator.last_error or "None",
@@ -117,4 +119,19 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                 "connection_phase": device.phase,
                 "ble_pairing_required": device.pairing_required,
             }
+        if not self.address and self.key in ("connected_devices", "disconnected_devices"):
+            want_connected = self.key == "connected_devices"
+            devices = [
+                {
+                    "name": device.name,
+                    "address": device.address,
+                    "connect_enabled": device.connect_enabled,
+                    "status": "connected" if device.connected else "disconnected",
+                }
+                for device in sorted(
+                    self.coordinator.devices.values(), key=lambda item: (item.name.casefold(), item.address)
+                )
+                if device.connected is want_connected
+            ]
+            return {"devices": devices}
         return None

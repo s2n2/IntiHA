@@ -305,12 +305,20 @@ impl HaHardware {
         endpoint: Endpoint,
         op: &'static str,
         mut args: Value,
+        expected_output_epoch: Option<u64>,
     ) -> BoxFuture<'static, DeviceResult<Value>> {
         let bridge = self.bridge.clone();
         let session = self.session.clone();
         let characteristic = session.endpoints.read().unwrap().get(&endpoint).cloned();
         async move {
             let io_guard = session.io_lock.lock().await;
+            if expected_output_epoch
+                .is_some_and(|epoch| session.output_epoch.load(Ordering::SeqCst) != epoch)
+            {
+                return Err(device_error(
+                    "Output command was superseded by a stop and was not replayed",
+                ));
+            }
             if !session.connected.load(Ordering::SeqCst) || bridge.session(&session.id).is_none() {
                 return Err(device_error(
                     "BLE session has expired; command was not replayed",
@@ -406,7 +414,7 @@ impl HardwareInternal for HaHardware {
         message: &HardwareReadCmd,
     ) -> BoxFuture<'static, DeviceResult<HardwareReading>> {
         let endpoint = message.endpoint();
-        let result = self.operation(endpoint, "read", json!({}));
+        let result = self.operation(endpoint, "read", json!({}), None);
         async move {
             let value = result.await?;
             let data: Vec<u8> = serde_json::from_value(value["data"].clone())
@@ -440,10 +448,12 @@ impl HardwareInternal for HaHardware {
         };
         let session = self.session.clone();
         let bridge = self.bridge.clone();
+        let output_epoch = self.session.output_epoch.load(Ordering::SeqCst);
         let result = self.operation(
             message.endpoint(),
             "write",
             json!({"data":data,"response":message.write_with_response()}),
+            Some(output_epoch),
         );
         async move {
             // During stop preparation the official protocol driver compiles
@@ -479,7 +489,7 @@ impl HardwareInternal for HaHardware {
         .boxed()
     }
     fn subscribe(&self, message: &HardwareSubscribeCmd) -> BoxFuture<'static, DeviceResult<()>> {
-        let result = self.operation(message.endpoint(), "subscribe", json!({}));
+        let result = self.operation(message.endpoint(), "subscribe", json!({}), None);
         async move {
             result.await?;
             Ok(())
@@ -490,7 +500,7 @@ impl HardwareInternal for HaHardware {
         &self,
         message: &HardwareUnsubscribeCmd,
     ) -> BoxFuture<'static, DeviceResult<()>> {
-        let result = self.operation(message.endpoint(), "unsubscribe", json!({}));
+        let result = self.operation(message.endpoint(), "unsubscribe", json!({}), None);
         async move {
             result.await?;
             Ok(())

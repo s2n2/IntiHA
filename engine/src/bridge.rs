@@ -108,6 +108,9 @@ pub struct Session {
     pub ready: AtomicBool,
     pub first_write: AtomicBool,
     pub inflight: AtomicU64,
+    /// Generation for actuator writes. A stop increments this before it runs,
+    /// so any older queued/keepalive write is rejected after the stop barrier.
+    pub output_epoch: AtomicU64,
     pub io_lock: tokio::sync::Mutex<()>,
     pub last_io_error: Mutex<Option<String>>,
     pub classic_wevibe: AtomicBool,
@@ -127,6 +130,7 @@ impl Session {
             ready: AtomicBool::new(false),
             first_write: AtomicBool::new(true),
             inflight: AtomicU64::new(0),
+            output_epoch: AtomicU64::new(0),
             io_lock: tokio::sync::Mutex::new(()),
             last_io_error: Mutex::new(None),
             classic_wevibe: AtomicBool::new(classic_wevibe),
@@ -682,6 +686,21 @@ impl Bridge {
             .send(json!({"type":"output_clear","address":session.address}))
             .await;
         result.map(|_| ())
+    }
+
+    /// Invalidate actuator writes that were queued before a stop barrier.
+    ///
+    /// Buttplug protocol handlers may generate keepalive/output packets in the
+    /// background. Incrementing this generation before processing a Stop means
+    /// those already-created packets cannot execute after the physical stop.
+    pub fn cancel_queued_outputs(&self, session: &Arc<Session>) {
+        session.output_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn cancel_all_queued_outputs(&self) {
+        for session in self.all_sessions() {
+            self.cancel_queued_outputs(&session);
+        }
     }
 
     /// Send the verified cached stop plan while keeping the BLE session alive.
