@@ -48,6 +48,41 @@ impl Advertisement {
     }
 }
 
+/// Return the 16-bit value from a Bluetooth-base UUID advertisement.
+///
+/// We deliberately ignore adopted GATT service IDs (0x1800..=0x27ff). They
+/// are far too common to be useful as an Intiface protocol fingerprint.
+fn bluetooth_vendor_short_service(uuid: &Uuid) -> Option<u16> {
+    let (time_low, time_mid, time_hi, node) = uuid.as_fields();
+    const BLUETOOTH_BASE_TAIL: [u8; 8] = [0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb];
+    if time_low >> 16 != 0
+        || time_mid != 0
+        || time_hi != 0x1000
+        || node != &BLUETOOTH_BASE_TAIL
+    {
+        return None;
+    }
+    let short = (time_low & 0xffff) as u16;
+    if short == 0 || (0x1800..=0x27ff).contains(&short) {
+        None
+    } else {
+        Some(short)
+    }
+}
+
+/// Some devices advertise only a vendor 16-bit service even though their
+/// actual GATT service is a vendor-specific 128-bit UUID. We only use this
+/// as a *candidate* bridge into Buttplug. The real GATT service and required
+/// characteristics are still checked after connection before the device is
+/// accepted.
+fn service_alias_matches(advertised: &Uuid, configured: &Uuid) -> bool {
+    if advertised == configured {
+        return true;
+    }
+    bluetooth_vendor_short_service(advertised)
+        .is_some_and(|short| (configured.as_fields().0 & 0xffff) as u16 == short)
+}
+
 struct Candidate {
     advertisement: Advertisement,
     seen: Instant,
@@ -55,6 +90,7 @@ struct Candidate {
     attempts: u32,
     attempted: bool,
     protocol_hints: Vec<String>,
+    alias_matches: Vec<(String, ProtocolCommunicationSpecifier)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -384,6 +420,40 @@ impl Bridge {
             .filter(|(_, specifiers)| specifiers.contains(&specifier))
             .map(|(name, _)| name.clone())
             .collect();
+
+        // Normal advertisements go to the official matcher unchanged. For
+        // nameless devices that only advertise a short vendor service UUID
+        // (for example classic We-Vibe devices advertising 0xBB03), derive a
+        // bounded list of candidate protocol specifiers from Buttplug's own
+        // configured GATT service maps. This is not final identification:
+        // HardwareSpecializer still requires the real service and endpoint
+        // characteristics after connection before a device is admitted.
+        let mut alias_matches: Vec<(String, ProtocolCommunicationSpecifier)> = Vec::new();
+        let identity_poor = advertisement.name.trim().is_empty()
+            || advertisement.name.eq_ignore_ascii_case(&advertisement.address);
+        if protocol_hints.is_empty()
+            && identity_poor
+            && advertisement.manufacturer_data.is_empty()
+            && !advertisement.service_uuids.is_empty()
+        {
+            for (protocol_name, specifiers) in self.configuration.base_communication_specifiers() {
+                for candidate_specifier in specifiers {
+                    let ProtocolCommunicationSpecifier::BluetoothLE(ble) = candidate_specifier else {
+                        continue;
+                    };
+                    if ble.services().keys().any(|configured_service| {
+                        advertisement.service_uuids.iter().any(|advertised_service| {
+                            service_alias_matches(advertised_service, configured_service)
+                        })
+                    }) {
+                        alias_matches.push((protocol_name.clone(), candidate_specifier.clone()));
+                    }
+                }
+            }
+            alias_matches.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut seen = HashSet::new();
+            alias_matches.retain(|(protocol, _)| seen.insert(protocol.clone()));
+        }
         {
             let mut candidates = self.candidates.lock().unwrap();
             if candidates.len() >= 256 && !candidates.contains_key(&advertisement.address) {
@@ -404,10 +474,12 @@ impl Bridge {
                     attempts: 0,
                     attempted: false,
                     protocol_hints: protocol_hints.clone(),
+                    alias_matches: alias_matches.clone(),
                 });
             candidate.advertisement = advertisement.clone();
             candidate.seen = Instant::now();
             candidate.protocol_hints = protocol_hints;
+            candidate.alias_matches = alias_matches;
         }
     }
 
@@ -458,12 +530,31 @@ impl Bridge {
                     }
                     candidate.attempted = true;
                     candidate.next_attempt = now + Duration::from_secs(60);
-                    Some((candidate.advertisement.clone(), candidate.protocol_hints.clone()))
+                    let forced_match = if candidate.protocol_hints.is_empty()
+                        && !candidate.alias_matches.is_empty()
+                    {
+                        Some(
+                            candidate.alias_matches
+                                [(candidate.attempts as usize) % candidate.alias_matches.len()]
+                                .clone(),
+                        )
+                    } else {
+                        None
+                    };
+                    let protocol_hints = forced_match
+                        .as_ref()
+                        .map(|(protocol, _)| vec![protocol.clone()])
+                        .unwrap_or_else(|| candidate.protocol_hints.clone());
+                    Some((
+                        candidate.advertisement.clone(),
+                        protocol_hints,
+                        forced_match.map(|(_, specifier)| specifier),
+                    ))
                 })
                 .take(4)
                 .collect()
         };
-        for (advertisement, protocol_hints) in due {
+        for (advertisement, protocol_hints, match_specifier) in due {
             let event = HardwareCommunicationManagerEvent::DeviceFound {
                 name: advertisement.name.clone(),
                 address: advertisement.address.clone(),
@@ -471,6 +562,7 @@ impl Bridge {
                     self.clone(),
                     advertisement,
                     protocol_hints,
+                    match_specifier,
                 )),
             };
             if sender.send(event).await.is_err() {
@@ -799,6 +891,56 @@ mod tests {
             HardwareCommunicationManagerEvent::DeviceFound { address, .. }
                 if address == "AA:BB:CC:DD:EE:03"
         ));
+    }
+
+    #[test]
+    fn vendor_short_service_alias_matches_real_vendor_gatt_service() {
+        let advertised = Uuid::parse_str("0000bb03-0000-1000-8000-00805f9b34fb").unwrap();
+        let configured = Uuid::parse_str("f000bb03-0451-4000-b000-000000000000").unwrap();
+        assert!(service_alias_matches(&advertised, &configured));
+
+        let battery = Uuid::parse_str("0000180f-0000-1000-8000-00805f9b34fb").unwrap();
+        assert!(!service_alias_matches(&battery, &configured));
+        let wrong = Uuid::parse_str("f000cc03-0451-4000-b000-000000000000").unwrap();
+        assert!(!service_alias_matches(&advertised, &wrong));
+    }
+
+    #[tokio::test]
+    async fn nameless_short_service_gets_buttplug_protocol_candidates() {
+        let bridge = discovery_bridge();
+        let (tx, _rx) = mpsc::channel(1);
+        bridge.attach(tx);
+        bridge.configure(&json!({"enabled":true})).unwrap();
+        bridge
+            .advertisement(json!({
+                "address":"50:F1:4A:61:2F:2B",
+                "name":"",
+                "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],
+                "manufacturer_data":{}
+            }))
+            .await;
+        let candidates = bridge.candidates.lock().unwrap();
+        let candidate = candidates.get("50:F1:4A:61:2F:2B").unwrap();
+        assert!(candidate.protocol_hints.is_empty());
+        assert!(
+            candidate.alias_matches.iter().any(|(name, _)| name.contains("wevibe")),
+            "0xBB03 should produce at least one official We-Vibe protocol candidate"
+        );
+    }
+
+    #[tokio::test]
+    async fn adopted_gatt_services_do_not_trigger_alias_probing() {
+        let bridge = discovery_bridge();
+        bridge
+            .advertisement(json!({
+                "address":"AA:BB:CC:DD:EE:04",
+                "name":"",
+                "service_uuids":["0000180f-0000-1000-8000-00805f9b34fb"],
+                "manufacturer_data":{}
+            }))
+            .await;
+        let candidates = bridge.candidates.lock().unwrap();
+        assert!(candidates["AA:BB:CC:DD:EE:04"].alias_matches.is_empty());
     }
 
     #[tokio::test]

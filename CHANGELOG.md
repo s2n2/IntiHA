@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0b6
+
+- Add generic proxy-native BLE advertisement enrichment for identity-poor devices that advertise only a short vendor service UUID.
+- Match short vendor service fingerprints against Buttplug's own configured GATT service maps rather than maintaining an IntiHA device-name list.
+- Rotate ambiguous protocol candidates across bounded reconnect attempts.
+- Require the real post-connect GATT services and characteristics to match before a service-alias candidate is accepted.
+- Specifically fixes classic We-Vibe devices such as Ditto advertising `0000bb03-0000-1000-8000-00805f9b34fb` without a usable local name.
+- Exclude standard adopted GATT services from alias probing to avoid connecting to ordinary BLE peripherals.
+
 ## 0.3.0b5
 
 - Fix Rust/Cargo package versioning: Cargo now uses SemVer-valid `0.3.0-b5` while Home Assistant and IntiHA continue to report `0.3.0b5`.

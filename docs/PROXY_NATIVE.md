@@ -31,6 +31,21 @@ protocols to use the HA proxy transport.
 narrow transport/security policy such as known pairing behaviour, but they do
 not admit or reject devices.
 
+### Identity-poor advertisements
+
+Some supported BLE devices do not advertise a useful local name. A classic
+example is a We-Vibe Ditto that may appear to Home Assistant only as its MAC
+address while advertising the short vendor service `0xBB03`. In these cases,
+IntiHA compares non-standard 16-bit advertised services with the low 16 bits of
+Buttplug's configured 128-bit GATT service UUIDs. Matching protocols become
+bounded candidates rather than confirmed devices.
+
+The candidate still has to connect through Home Assistant and expose the actual
+service and characteristic map required by that Buttplug protocol. If that
+post-connect GATT verification fails, the session is dropped and the next
+ambiguous candidate may be tried after backoff. Standard adopted GATT services
+(`0x1800`-`0x27ff`) never trigger this probing path.
+
 This transport is intentionally BLE-only. Intiface devices that require a USB
 serial, HID, gamepad or another non-BLE hardware manager cannot be carried over
 an ESPHome Bluetooth proxy.

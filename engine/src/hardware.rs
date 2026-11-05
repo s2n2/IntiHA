@@ -58,17 +58,20 @@ pub struct HaConnector {
     bridge: Arc<Bridge>,
     advertisement: Advertisement,
     protocol_hints: Vec<String>,
+    match_specifier: Option<ProtocolCommunicationSpecifier>,
 }
 impl HaConnector {
     pub fn new(
         bridge: Arc<Bridge>,
         advertisement: Advertisement,
         protocol_hints: Vec<String>,
+        match_specifier: Option<ProtocolCommunicationSpecifier>,
     ) -> Self {
         Self {
             bridge,
             advertisement,
             protocol_hints,
+            match_specifier,
         }
     }
 }
@@ -97,7 +100,9 @@ struct ConnectResult {
 #[async_trait]
 impl HardwareConnector for HaConnector {
     fn specifier(&self) -> ProtocolCommunicationSpecifier {
-        self.advertisement.specifier()
+        self.match_specifier
+            .clone()
+            .unwrap_or_else(|| self.advertisement.specifier())
     }
     async fn connect(&mut self) -> DeviceResult<Box<dyn HardwareSpecializer>> {
         let address = &self.advertisement.address;
@@ -211,6 +216,7 @@ impl HardwareSpecializer for HaSpecializer {
             .iter()
             .find(|p| matches!(p, ProtocolCommunicationSpecifier::BluetoothLE(_)))
         else {
+            self.bridge.failed_attempt(&self.session.address);
             let _ = self.bridge.disconnect_session(&self.session).await;
             return Err(device_error("No Bluetooth service mapping for this device"));
         };
@@ -241,6 +247,7 @@ impl HardwareSpecializer for HaSpecializer {
             }
         }
         if endpoints.is_empty() {
+            self.bridge.failed_attempt(&self.session.address);
             let _ = self.bridge.disconnect_session(&self.session).await;
             return Err(device_error(
                 "None of the required GATT characteristics was found",
