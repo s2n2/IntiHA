@@ -64,6 +64,9 @@
     "switch": {
       "enabled": {
         "name": "Server enabled"
+      },
+      "connect_enabled": {
+        "name": "Connect to this device"
       }
     },
     "button": {

@@ -174,6 +174,7 @@ pub struct Bridge {
     candidates: Mutex<HashMap<String, Candidate>>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     connecting: Mutex<HashSet<String>>,
+    blocked_addresses: Mutex<HashSet<String>>,
     comm_sender: Mutex<Option<mpsc::Sender<HardwareCommunicationManagerEvent>>>,
     configuration: Arc<DeviceConfigurationManager>,
     pub manual_timeout: AtomicU64,
@@ -198,6 +199,7 @@ impl Bridge {
             candidates: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             connecting: Mutex::new(HashSet::new()),
+            blocked_addresses: Mutex::new(HashSet::new()),
             comm_sender: Mutex::new(None),
             configuration,
             manual_timeout: AtomicU64::new(60),
@@ -354,6 +356,25 @@ impl Bridge {
             }
             self.enabled.store(enabled, Ordering::SeqCst);
         }
+        if let Some(value) = value.get("blocked_addresses") {
+            let list = value.as_array().ok_or("blocked_addresses must be an array")?;
+            if list.len() > 256 {
+                return Err("blocked_addresses is too large".into());
+            }
+            let mut blocked = HashSet::new();
+            for item in list {
+                let address = item
+                    .as_str()
+                    .ok_or("blocked_addresses entries must be strings")?
+                    .trim()
+                    .to_uppercase();
+                if !valid_address(&address) {
+                    return Err("blocked_addresses contains an invalid Bluetooth address".into());
+                }
+                blocked.insert(address);
+            }
+            *self.blocked_addresses.lock().unwrap() = blocked;
+        }
         for candidate in self.candidates.lock().unwrap().values_mut() {
             candidate.next_attempt = Instant::now();
             candidate.attempted = false;
@@ -389,6 +410,15 @@ impl Bridge {
 
     pub fn supported(&self, address: &str) -> bool {
         self.candidates.lock().unwrap().contains_key(address)
+            && !self.blocked_addresses.lock().unwrap().contains(address)
+    }
+
+    pub fn is_blocked(&self, address: &str) -> bool {
+        self.blocked_addresses.lock().unwrap().contains(address)
+    }
+
+    pub fn blocked_addresses(&self) -> HashSet<String> {
+        self.blocked_addresses.lock().unwrap().clone()
     }
 
     pub async fn advertisement(&self, value: Value) {
@@ -518,7 +548,8 @@ impl Bridge {
             candidates
                 .values_mut()
                 .filter_map(|candidate| {
-                    if connected.contains(&candidate.advertisement.address)
+                    if self.is_blocked(&candidate.advertisement.address)
+                        || connected.contains(&candidate.advertisement.address)
                         || connecting.contains(&candidate.advertisement.address)
                         || now.duration_since(candidate.seen) > Duration::from_secs(120)
                         || candidate.next_attempt > now
@@ -687,6 +718,25 @@ impl Bridge {
             sessions
                 .iter()
                 .map(|session| self.disconnect_session(session)),
+        )
+        .await;
+    }
+
+    pub async fn disconnect_blocked(&self) {
+        let blocked = self.blocked_addresses();
+        if blocked.is_empty() {
+            return;
+        }
+        let sessions: Vec<_> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|session| blocked.contains(&session.address))
+            .cloned()
+            .collect();
+        futures::future::join_all(
+            sessions.iter().map(|session| self.disconnect_session(session)),
         )
         .await;
     }
@@ -884,6 +934,44 @@ mod tests {
         let (manager, mut found) = mpsc::channel(4);
         bridge.install_manager(manager);
         bridge.advertisement(json!({"address":"AA:BB:CC:DD:EE:03","name":"LVS-TEST","service_uuids":[],"manufacturer_data":{}})).await;
+        assert!(bridge.supported("AA:BB:CC:DD:EE:03"));
+        bridge.discover_due().await;
+        assert!(matches!(
+            found.try_recv().unwrap(),
+            HardwareCommunicationManagerEvent::DeviceFound { address, .. }
+                if address == "AA:BB:CC:DD:EE:03"
+        ));
+    }
+
+    #[tokio::test]
+    async fn blocked_device_stays_discovered_but_is_not_connectable() {
+        let bridge = discovery_bridge();
+        let (tx, _rx) = mpsc::channel(1);
+        bridge.attach(tx);
+        bridge
+            .configure(&json!({
+                "enabled":true,
+                "blocked_addresses":["AA:BB:CC:DD:EE:03"]
+            }))
+            .unwrap();
+        let (manager, mut found) = mpsc::channel(4);
+        bridge.install_manager(manager);
+        bridge
+            .advertisement(json!({
+                "address":"AA:BB:CC:DD:EE:03",
+                "name":"LVS-TEST",
+                "service_uuids":[],
+                "manufacturer_data":{}
+            }))
+            .await;
+        assert!(bridge.candidates.lock().unwrap().contains_key("AA:BB:CC:DD:EE:03"));
+        assert!(!bridge.supported("AA:BB:CC:DD:EE:03"));
+        bridge.discover_due().await;
+        assert!(found.try_recv().is_err());
+
+        bridge
+            .configure(&json!({"enabled":true,"blocked_addresses":[]}))
+            .unwrap();
         assert!(bridge.supported("AA:BB:CC:DD:EE:03"));
         bridge.discover_due().await;
         assert!(matches!(

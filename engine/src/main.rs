@@ -29,7 +29,11 @@ async fn main() -> anyhow::Result<()> {
         _ = wait_for_signal() => None,
     };
     supervisor.abort();
-    app.shutdown().await;
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        app.shutdown(),
+    )
+    .await;
     client_task.abort();
     bridge_task.abort();
     if let Some(result) = termination {

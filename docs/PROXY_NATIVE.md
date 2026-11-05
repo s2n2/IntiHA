@@ -103,3 +103,26 @@ control.
 ## Master server switch
 
 The Home Assistant **Server enabled** entity is the master runtime gate. Off stops outputs, disconnects BLE sessions, cancels discovery, invalidates external control and makes the public Buttplug WebSocket endpoints return HTTP 503. The HA bridge remains connected only as the private control plane required to turn the server back on.
+
+## Device identity and per-device connection policy
+
+Home Assistant keeps the best useful name IntiHA has learned for each physical
+BLE address. A specific advertised/model name is not replaced by a generic
+Buttplug label. If the device exposes no useful name, IntiHA uses a stable
+protocol-family label plus the final Bluetooth address bytes so multiple generic
+devices remain distinguishable. Users can still rename the HA device normally.
+
+Each discovered supported BLE device has a **Connect to this device** switch.
+It defaults on and is stored by the Home Assistant integration. Off keeps the
+device visible but places its address in the engine's deny list, preventing new
+GATT attempts and safely disconnecting an existing session. This is intended
+for supported devices that are visible over Bluetooth but should not be owned by
+this IntiHA instance, for example a nearby neighbour's device.
+
+## Bounded shutdown
+
+0.3.0b7 bounds Home Assistant stop-all locking, Rust shutdown cleanup and the
+container entrypoint wait. Supervisor updates therefore cannot wait forever on
+a wedged BLE/admin operation. When upgrading from an older build, switching the
+server off before the first app update remains the cleanest path because the old
+container itself does not yet contain these new bounds.

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0b7
+
+Device identity, per-device connection policy and update reliability.
+
+- Preserve a useful advertised or previously learned device/model name when Buttplug later reports a generic protocol label such as `WeVibe Device` or `WeVibe 8-bit Device`.
+- Prefer a genuinely model-specific Buttplug name when one is available. Nameless/generic devices receive a stable protocol plus Bluetooth-address suffix, for example `We-Vibe · 2F:2B`, so multiple devices are distinguishable in Home Assistant.
+- Register each IntiHA device with its Bluetooth address in the Home Assistant device registry while preserving any user-selected HA device name. MAC/OUI data is not treated as a reliable model lookup.
+- Add a per-device **Connect to this device** switch. It defaults on, persists across restarts/updates, and when off leaves the device visible while preventing automatic connection/retry attempts. Disabling an already connected device performs the normal safe disconnect.
+- Enforce the same per-device deny list in both the Home Assistant BLE bridge and the Rust discovery scheduler, so an unwanted/neighbour device is skipped before another GATT attempt is created.
+- Fix a nested `_state_lock` in `Stop all` that could deadlock the Home Assistant control path.
+- Bound Rust shutdown, the container entrypoint wait, and BLE/admin cleanup so Supervisor app updates cannot wait indefinitely on a stuck connection operation.
+- Retain 0.3.0b6's service-fingerprint discovery for identity-poor BLE devices.
+
 ## 0.3.0b6
 
 - Add generic proxy-native BLE advertisement enrichment for identity-poor devices that advertise only a short vendor service UUID.

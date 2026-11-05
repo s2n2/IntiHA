@@ -68,6 +68,7 @@ class IntiHAEntity(Entity):
         )
         return DeviceInfo(
             identifiers={(DOMAIN, f"{entry_id}:{self.address}")},
+            connections={("bluetooth", self.address)},
             name=device.name,
             via_device_id=hub.id if hub is not None else None,
         )

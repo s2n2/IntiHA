@@ -83,6 +83,16 @@ cleanup() {
     fi
     if [ -n "$engine_pid" ]; then
         kill -TERM "$engine_pid" 2>/dev/null || true
+        # Do not let a wedged BLE/admin cleanup make Supervisor updates hang.
+        # Give the engine a short graceful window, then force termination.
+        i=0
+        while kill -0 "$engine_pid" 2>/dev/null && [ "$i" -lt 150 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+        if kill -0 "$engine_pid" 2>/dev/null; then
+            kill -KILL "$engine_pid" 2>/dev/null || true
+        fi
         wait "$engine_pid" 2>/dev/null || true
     fi
     if [ -n "$discovery_pid" ]; then

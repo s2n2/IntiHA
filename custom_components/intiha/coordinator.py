@@ -49,6 +49,61 @@ def normalise_address(value: str) -> str:
     return value
 
 
+def _clean_name(value: object) -> str:
+    """Return a bounded, printable Bluetooth/device name."""
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.strip().split())[:100]
+
+
+def _specific_name(value: object, address: str) -> str | None:
+    """Return a useful model/advertised name, excluding generic protocol labels."""
+    name = _clean_name(value)
+    if not name or name.upper() == address.upper() or _MAC.fullmatch(name.upper()):
+        return None
+    lowered = name.casefold().replace("-", "")
+    if lowered in {
+        "device",
+        "wevibe device",
+        "wevibe 8bit device",
+        "intiha device",
+        "buttplug device",
+    }:
+        return None
+    return name
+
+
+def _protocol_label(protocol: str) -> str:
+    """Humanise common Buttplug protocol identifiers for HA fallback names."""
+    key = protocol.strip().casefold()
+    known = {
+        "wevibe": "We-Vibe",
+        "wevibe-8bit": "We-Vibe 8-bit",
+    }
+    if key in known:
+        return known[key]
+    words = [word for word in re.split(r"[-_]+", protocol.strip()) if word]
+    return " ".join(word.upper() if word.isupper() else word.capitalize() for word in words)
+
+
+def _fallback_name(address: str, protocols: list[str], engine_name: object = None) -> str:
+    """Build a stable distinguishable name when BLE provides no model name."""
+    suffix = ":".join(address.split(":")[-2:])
+    engine = _clean_name(engine_name)
+    base = ""
+    if engine and engine.upper() != address.upper() and not _MAC.fullmatch(engine.upper()):
+        base = re.sub(r"\s+Device$", "", engine, flags=re.IGNORECASE).strip()
+        if base.casefold().replace("-", "") == "wevibe":
+            base = "We-Vibe"
+        elif base.casefold().replace("-", "") == "wevibe 8bit":
+            base = "We-Vibe 8-bit"
+    if not base and protocols:
+        base = _protocol_label(protocols[0])
+    if not base:
+        base = "Bluetooth device"
+    return f"{base} · {suffix}"[:100]
+
+
 @dataclass
 class DeviceState:
     """Observed state; output values are commands, not hardware feedback."""
@@ -67,6 +122,9 @@ class DeviceState:
     error: str | None = None
     phase: str = "offline"
     pairing_required: bool = False
+    advertised_name: str = ""
+    protocols: list[str] = field(default_factory=list)
+    connect_enabled: bool = True
 
     def scalar_features(self) -> list[dict[str, Any]]:
         """Expose vibration controls only when advertised by the real engine."""
@@ -113,7 +171,7 @@ class IntiHACoordinator:
         self.ble = BleBridge(
             hass,
             self._async_ble_event,
-            lambda address: address.upper() in self.devices,
+            self._device_connect_allowed,
             requires_pairing=self._requires_pairing,
             on_pairing_required=self._require_pairing,
         )
@@ -159,6 +217,11 @@ class IntiHACoordinator:
         for listener in tuple(self._listeners):
             listener()
 
+    def _device_connect_allowed(self, address: str) -> bool:
+        """Allow GATT only for a supported device whose per-device switch is on."""
+        device = self.devices.get(address.upper())
+        return bool(self.enabled and device is not None and device.connect_enabled)
+
     def _requires_pairing(self, address: str) -> bool:
         """Transport security policy for a known, compatible device."""
         device = self.devices.get(address)
@@ -181,8 +244,11 @@ class IntiHACoordinator:
             "devices": {
                 address: {
                     "name": device.name,
+                    "advertised_name": device.advertised_name,
+                    "protocols": device.protocols,
                     "messages": device.messages,
                     "pairing_required": device.pairing_required,
+                    "connect_enabled": device.connect_enabled,
                 }
                 for address, device in self.devices.items()
             },
@@ -200,6 +266,9 @@ class IntiHACoordinator:
             "auto_reconnect": self.config.get(CONF_AUTO_RECONNECT, True),
             "manual_timeout_seconds": self.config.get(
                 CONF_CONTROL_TIMEOUT, DEFAULT_CONTROL_TIMEOUT
+            ),
+            "blocked_addresses": sorted(
+                address for address, device in self.devices.items() if not device.connect_enabled
             ),
         }
 
@@ -220,8 +289,12 @@ class IntiHACoordinator:
         for address, metadata in data.get("devices", {}).items():
             device = self._register_device(address, metadata.get("name", "Device"))
             if device is not None:
+                device.advertised_name = _clean_name(metadata.get("advertised_name", ""))
+                raw_protocols = metadata.get("protocols", [])
+                device.protocols = [str(value)[:80] for value in raw_protocols if isinstance(value, str)][:16]
                 device.messages = metadata.get("messages", {})
                 device.pairing_required = metadata.get("pairing_required") is True
+                device.connect_enabled = metadata.get("connect_enabled") is not False
         await self.ble.async_start()
 
     @callback
@@ -278,6 +351,35 @@ class IntiHACoordinator:
                     if enabled and self.engine_connected:
                         self._last_advertisement.clear()
                         self._spawn(self._async_send_cached(self.bridge.epoch), "enable discovery")
+            except BridgeError as err:
+                self.last_error = self._safe_error(err)
+                if enabled:
+                    await self.bridge.reconnect()
+            finally:
+                self._notify()
+
+    async def async_set_device_connect(self, address: str, enabled: bool) -> None:
+        """Persist and enforce the per-device auto-connect policy."""
+        address = normalise_address(address)
+        async with self._state_lock:
+            device = self.devices.get(address)
+            if device is None:
+                raise HomeAssistantError("Device is no longer known to IntiHA")
+            device.connect_enabled = bool(enabled)
+            if not enabled:
+                device.phase = "offline"
+                device.outputs.clear()
+            self._save()
+            self._notify()
+            try:
+                if self.bridge.connected:
+                    await self.bridge.request("configure", **self._settings())
+                    if enabled and self.engine_connected:
+                        self._last_advertisement.pop(address, None)
+                        for advertisement in self.ble.discovered():
+                            if advertisement.get("address", "").upper() == address:
+                                await self._async_ble_event({**advertisement, "type": "advertisement"})
+                                break
             except BridgeError as err:
                 self.last_error = self._safe_error(err)
                 if enabled:
@@ -514,12 +616,22 @@ class IntiHACoordinator:
                     device.error = None
         elif kind == "discovered":
             address = str(message.get("address", "")).upper()
-            device = self._register_device(address, str(message.get("name", "Device")))
+            raw_name = _clean_name(message.get("name", ""))
+            raw_protocols = message.get("protocols", [])
+            protocols = [str(value)[:80] for value in raw_protocols if isinstance(value, str)][:16]
+            device = self._register_device(address, raw_name or "Device")
             if device is not None:
+                specific = _specific_name(raw_name, address)
+                if specific:
+                    device.advertised_name = specific
+                    device.name = specific
+                device.protocols = protocols or device.protocols
+                if not _specific_name(device.name, address):
+                    device.name = _fallback_name(address, device.protocols, device.name)
                 self.discovered[address] = {
                     "address": address,
-                    "name": str(message.get("name", "Device"))[:100],
-                    "protocols": message.get("protocols", []),
+                    "name": raw_name,
+                    "protocols": device.protocols,
                 }
                 metadata = self.discovered[address]
                 if profile_requests_pairing(metadata["name"], metadata["protocols"]):
@@ -583,7 +695,22 @@ class IntiHACoordinator:
                 if new_connection and address in self._uncertain_addresses:
                     self._uncertain_addresses.discard(address)
                     self.stop_uncertain = bool(self._uncertain_addresses)
-            device.name = description.get("DeviceName", device.name)
+            engine_name = description.get("DeviceName", device.name)
+            advertised = _specific_name(device.advertised_name, address)
+            engine_specific = _specific_name(engine_name, address)
+            current_specific = _specific_name(device.name, address)
+            if engine_specific:
+                # A genuinely model-specific Buttplug name is better than an
+                # advertisement alias such as a short product code.
+                device.name = engine_specific
+            elif advertised:
+                device.name = advertised
+            elif current_specific:
+                # Preserve a previously learned specific name; never downgrade
+                # it to a generic Buttplug protocol label on inventory refresh.
+                device.name = current_specific
+            else:
+                device.name = _fallback_name(address, device.protocols, engine_name)
             device.index = index
             device.connection_id = connection_id
             device.connected = description.get("ready") is True

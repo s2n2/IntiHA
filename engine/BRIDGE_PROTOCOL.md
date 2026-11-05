@@ -9,10 +9,10 @@ size is 64 KiB. Byte data is always a JSON array of integers 0–255.
 HA first sends:
 
 ```json
-{"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60}
+{"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60,"blocked_addresses":[]}
 ```
 
-The engine replies `{"type":"hello","protocol":1,"version":"0.2.5"}`.
+The engine replies `{"type":"hello","protocol":1,"version":"0.3.0b7"}`.
 The socket establishes a new generation; previous pending RPCs and BLE sessions
 must never survive it. `connection_id` is a new UUID for each physical connect.
 The address is uppercase. No command is replayed after reconnection.
@@ -27,8 +27,10 @@ The address is uppercase. No command is replayed after reconnection.
 
 Advertisements may include `service_data` and `connectable`. Send all
 advertisements continuously while enabled. Every device recognized by the
-official protocol matcher is automatically eligible to connect; there is no
-address approval list. Unsupported advertisements are ignored. The engine
+official protocol matcher is automatically eligible to connect unless its
+address is in HA's persistent `blocked_addresses` deny list. This is a per-device
+opt-out, not an approval list; newly discovered supported devices default to allowed.
+Unsupported advertisements are ignored. The engine
 queues a `discovered` event before issuing that address's first connect request,
 so HA can create the device and admit the connection in the same session.
 Search refreshes cached advertisements and retries previously attempted
@@ -84,7 +86,7 @@ original connection_id. HA must reject an unknown/stale connection_id.
 ## HA administration
 
 ```json
-{"type":"admin","id":10,"op":"configure","enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60}
+{"type":"admin","id":10,"op":"configure","enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60,"blocked_addresses":[]}
 {"type":"admin","id":11,"op":"scan","seconds":30}
 {"type":"admin","id":12,"op":"stop"}
 {"type":"admin","id":13,"op":"status"}
@@ -108,7 +110,9 @@ device lists, and stop. Raw GATT and handshake messages are not permitted.
 When an external client owns control, HA may still read status/sensors or stop.
 Manual commands expire after `manual_timeout_seconds` (15–600; default 60).
 Changing configuration to disabled stops and disconnects devices. Enabling
-does not resume prior output.
+does not resume prior output. `blocked_addresses` contains up to 256 uppercase
+Bluetooth addresses that must remain discoverable but must not be scheduled for
+new connections; a newly blocked live session is safely stopped/disconnected.
 
 Explicit stop, the manual timeout, client loss and off fence the old session,
 apply the cached stop through HA and disconnect. This intentionally clears

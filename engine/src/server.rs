@@ -283,6 +283,7 @@ impl App {
                     let _ = self.bridge.scan(false).await;
                     stopped?;
                 }
+                self.bridge.disconnect_blocked().await;
                 self.bridge.disconnect_if_disabled().await;
                 let status = self.bridge.status();
                 let _ = self.bridge.send(status.clone()).await;
@@ -707,10 +708,14 @@ impl App {
         self.stopping.store(true, Ordering::SeqCst);
         self.bridge.enabled.store(false, Ordering::SeqCst);
         self.bridge.control_epoch.fetch_add(1, Ordering::SeqCst);
-        let _guard = self.admin_lock.lock().await;
-        let _ = self.stop_all().await;
-        self.bridge.disconnect_if_disabled().await;
-        let _ = tokio::time::timeout(Duration::from_secs(15), self.admin_server.shutdown()).await;
+        // Supervisor updates must never wait forever behind a wedged BLE/admin
+        // operation. Give graceful cleanup a bounded window; process teardown
+        // will retire any remaining sockets/tasks afterwards.
+        if let Ok(_guard) = tokio::time::timeout(Duration::from_secs(3), self.admin_lock.lock()).await {
+            let _ = tokio::time::timeout(Duration::from_secs(8), self.stop_all()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), self.bridge.disconnect_if_disabled()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), self.admin_server.shutdown()).await;
+        }
     }
 }
 

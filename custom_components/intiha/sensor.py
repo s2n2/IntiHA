@@ -80,7 +80,7 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
             if self.key == "device_status":
                 return (
                     "disabled"
-                    if not coordinator.enabled
+                    if not coordinator.enabled or not device.connect_enabled
                     else "connected"
                     if device.connected
                     else device.phase
@@ -109,6 +109,10 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
         if self.address and self.key == "device_status":
             device = self.coordinator.devices[self.address]
             return {
+                "bluetooth_address": device.address,
+                "advertised_name": device.advertised_name or None,
+                "buttplug_protocols": device.protocols,
+                "connect_enabled": device.connect_enabled,
                 "last_error": device.error,
                 "connection_phase": device.phase,
                 "ble_pairing_required": device.pairing_required,

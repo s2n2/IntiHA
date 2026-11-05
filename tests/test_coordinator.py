@@ -214,12 +214,30 @@ async def test_enabling_configures_only_and_never_replays_prior_output(coordinat
         enabled=True,
         auto_reconnect=True,
         manual_timeout_seconds=60,
+        blocked_addresses=[],
     )
     settings = coordinator._hello()
     assert "outputs" not in settings
     persisted = coordinator._persisted_state()
     assert "outputs" not in persisted["devices"][ADDRESS]
     assert "connection_id" not in persisted["devices"][ADDRESS]
+
+
+async def test_per_device_connect_policy_is_persisted_and_sent_to_engine(coordinator):
+    coordinator.bridge.connected = True
+    coordinator._update_devices([device_description()])
+
+    await coordinator.async_set_device_connect(ADDRESS, False)
+
+    assert coordinator.devices[ADDRESS].connect_enabled is False
+    assert coordinator._settings()["blocked_addresses"] == [ADDRESS]
+    coordinator.bridge.request.assert_awaited_with(
+        "configure",
+        enabled=True,
+        auto_reconnect=True,
+        manual_timeout_seconds=60,
+        blocked_addresses=[ADDRESS],
+    )
 
 
 async def test_stop_failure_is_visible_and_attempts_local_cleanup(coordinator):

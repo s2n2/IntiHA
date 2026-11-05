@@ -122,6 +122,7 @@ async def test_devices_and_controls_appear_once_without_reload(hass, loaded):
     keys = {
         "binary_sensor": ("connected",),
         "button": ("stop",),
+        "switch": ("connect_enabled",),
         "sensor": ("device_status", "battery", "signal_strength", "last_seen_via", "last_seen"),
     }
     for domain, domain_keys in keys.items():
@@ -143,7 +144,7 @@ async def test_devices_and_controls_appear_once_without_reload(hass, loaded):
     assert device.name == "Official device name"
     assert device.name_by_user == "My device"
     entries = er.async_entries_for_device(er.async_get(hass), device.id)
-    assert len(entries) == 8
+    assert len(entries) == 9
     await discover(coordinator, address="AA:BB:CC:DD:EE:02", name="Another device")
     await hass.async_block_till_done()
     assert (
