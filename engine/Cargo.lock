@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "intiha-engine"
-version = "0.3.0-b10"
+version = "0.3.0-b11"
 dependencies = [
  "anyhow",
  "async-trait",

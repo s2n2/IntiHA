@@ -206,10 +206,6 @@ impl App {
     /// verified per-session stop plan specifically so we can stop in place.
     async fn stop_outputs(&self) -> Result<(), String> {
         *self.bridge.manual_deadline.lock().unwrap() = None;
-        // A stop is a command barrier. Anything generated before this point
-        // (including protocol keepalives) must not be allowed to execute after
-        // the verified physical stop.
-        self.bridge.cancel_all_queued_outputs();
         let sessions: Vec<_> = self
             .bridge
             .all_sessions()
@@ -260,28 +256,10 @@ impl App {
             .bridge
             .session_for(info.identifier().address())
             .ok_or("Device has no live Bluetooth session")?;
-        self.bridge.cancel_queued_outputs(&session);
         self.bridge
             .stop_session(&session)
             .await
             .map_err(|e| e.to_string())
-    }
-
-    fn output_stop_barrier(&self, index: Option<u32>) -> Result<(), String> {
-        if let Some(index) = index {
-            let info = self
-                .manager
-                .device_info(index)
-                .ok_or("Device is not connected")?;
-            let session = self
-                .bridge
-                .session_for(info.identifier().address())
-                .ok_or("Device has no live Bluetooth session")?;
-            self.bridge.cancel_queued_outputs(&session);
-        } else {
-            self.bridge.cancel_all_queued_outputs();
-        }
-        Ok(())
     }
 
     pub async fn administer(&self, value: Value) -> Result<Value, String> {
@@ -390,19 +368,13 @@ impl App {
                 }
                 let stopped_index = message[name]["DeviceIndex"].as_u64().map(|v| v as u32);
                 if name == "StopAllDevices" {
-                    // Let Buttplug clear its internal output/keepalive state,
-                    // then put the verified cached BLE stop last on the wire.
-                    self.output_stop_barrier(None)?;
-                    let response = self.v3(message).await?;
-                    self.stop_outputs().await?;
-                    return Ok(json!({"message":response}));
+                    self.stop_all().await?;
+                    return Ok(json!({"message":{"Ok":{"Id":message[name]["Id"]}}}));
                 }
                 if name == "StopDeviceCmd" {
-                    let index = stopped_index.ok_or("Missing device index")?;
-                    self.output_stop_barrier(Some(index))?;
-                    let response = self.v3(message).await?;
-                    self.stop_device_output(index).await?;
-                    return Ok(json!({"message":response}));
+                    self.stop_device(stopped_index.ok_or("Missing device index")?)
+                        .await?;
+                    return Ok(json!({"message":{"Ok":{"Id":message[name]["Id"]}}}));
                 }
                 let response = self.v3(message).await?;
                 if movement {
@@ -963,62 +935,12 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                                     let stop_name = ["StopAllDevices", "StopDeviceCmd", "StopCmd"].into_iter().find(|name| value.get(*name).is_some());
                                     if let Some(name) = stop_name
                                         && (name != "StopCmd" || value[name]["Outputs"].as_bool().unwrap_or(true)) {
-                                            let stopped_index = value[name]["DeviceIndex"]
-                                                .as_u64()
-                                                .and_then(|index| u32::try_from(index).ok());
-                                            // First invalidate output writes that were created
-                                            // before the stop. Then let the official Buttplug
-                                            // server consume the stop so its own keepalive and
-                                            // command state is cleared. Finally send the verified
-                                            // cached stop, making zero the last BLE state.
-                                            let _ = app.output_stop_barrier(stopped_index);
-                                            let official = tokio::time::timeout(
-                                                Duration::from_secs(8),
-                                                server.parse_message(message),
-                                            )
-                                            .await;
-                                            let physical = if let Some(index) = stopped_index {
-                                                app.stop_device_output(index).await
-                                            } else {
-                                                app.stop_outputs().await
-                                            };
-                                            if let Err(error) = physical {
-                                                let response = error_message(id,&format!("Stop could not be confirmed: {error}"));
-                                                if !bounded_send(&mut socket,response).await { break; }
-                                                continue;
-                                            }
-                                            let response = match official {
-                                                Ok(Ok(response)) => Message::Text(
-                                                    match serializer.serialize(&[response]) {
-                                                        ButtplugSerializedMessage::Text(text) => text,
-                                                        _ => json!([{"Ok":{"Id":id}}]).to_string(),
-                                                    }.into(),
-                                                ),
-                                                Ok(Err(response)) => {
-                                                    // The physical stop succeeded, but the
-                                                    // protocol state is uncertain. Retire the
-                                                    // affected session so no latent output can
-                                                    // come back after the stop.
-                                                    if let Some(index) = stopped_index {
-                                                        let _ = app.stop_device(index).await;
-                                                    } else {
-                                                        let _ = app.stop_all().await;
-                                                    }
-                                                    Message::Text(
-                                                        match serializer.serialize(&[response]) {
-                                                            ButtplugSerializedMessage::Text(text) => text,
-                                                            _ => json!([{"Error":{"Id":id,"ErrorMessage":"Buttplug stop state could not be cleared","ErrorCode":4}}]).to_string(),
-                                                        }.into(),
-                                                    )
-                                                }
-                                                Err(_) => {
-                                                    if let Some(index) = stopped_index {
-                                                        let _ = app.stop_device(index).await;
-                                                    } else {
-                                                        let _ = app.stop_all().await;
-                                                    }
-                                                    error_message(id,"Buttplug stop state timed out; verified stop sent and BLE session retired")
-                                                }
+                                            let result = if let Some(index) = value[name]["DeviceIndex"].as_u64() {
+                                                app.stop_device_output(index as u32).await
+                                            } else { app.stop_outputs().await };
+                                            let response = match result {
+                                                Ok(()) => Message::Text(json!([{"Ok":{"Id":id}}]).to_string().into()),
+                                                Err(error) => error_message(id,&format!("Stop could not be confirmed: {error}")),
                                             };
                                             if !bounded_send(&mut socket,response).await { break; }
                                             continue;

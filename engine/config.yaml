@@ -1,9 +1,8 @@
 name: IntiHA Proxy Engine
-version: "0.3.0b10"
+version: "0.3.0b11"
 slug: intiha_engine
 description: Buttplug server using Home Assistant managed Bluetooth and ESPHome proxies; no local Bluetooth adapter required
 url: https://github.com/s2n2/IntiHA
-image: ghcr.io/s2n2/intiha-engine
 timeout: 30
 arch:
   - aarch64

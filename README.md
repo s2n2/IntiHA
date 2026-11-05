@@ -1,6 +1,6 @@
 # IntiHA
 
-> **0.3.0b10 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
+> **0.3.0b11 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
 
 
 **A plug-and-play Buttplug server using Home Assistant's Bluetooth coverage.**
@@ -16,11 +16,11 @@ Assistant owns BLE scanning, adapter selection and GATT through its connectable
 adapters and ESPHome proxies. The Rust engine owns Buttplug protocol matching,
 device drivers and the external Buttplug server.
 
-**Version 0.3.0b10 - stop-barrier + clearer device state beta.**
+**Version 0.3.0b11 - stop-barrier + clearer device state beta.**
 
 0.3.0b9 keeps the broad/service-fingerprint discovery from 0.3.0b6 and the persistent identity fixes from b8. The Engine app is now distributed as a prebuilt multi-architecture GHCR image, so Home Assistant updates pull the finished image instead of compiling Rust locally at 0% progress. Device identity remains persistent. IntiHA now remembers the best specific name it has learned for each Bluetooth address, actively asks Home Assistant for scan-response names when a supported device is otherwise generic, and can recover the standard BLE Device Name after connection. A later generic Buttplug label can no longer downgrade a learned name such as **Bond**. Each discovered device retains the persistent **Connect to this device** switch introduced in b7.
 
-0.3.0b10 fixes a stop regression seen with pulse-style external clients: IntiHA now lets Buttplug clear its internal output/keepalive state, cancels stale queued actuator writes, and then sends the verified physical stop last. This prevents a device from briefly stopping and immediately returning to the previous 100% command. The hub also exposes separate **Currently connected** and **Disconnected devices** summaries with names and Bluetooth addresses in their attributes.
+0.3.0b11 fixes a stop regression seen with pulse-style external clients: IntiHA now lets Buttplug clear its internal output/keepalive state, cancels stale queued actuator writes, and then sends the verified physical stop last. This prevents a device from briefly stopping and immediately returning to the previous 100% command. The hub also exposes separate **Currently connected** and **Disconnected devices** summaries with names and Bluetooth addresses in their attributes.
 
 The Home Assistant **Server enabled** switch gates the complete user-facing
 Intiface service. When it is off, IntiHA stops outputs, discovery and BLE
@@ -55,7 +55,7 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
-| **0.3.0b10** | External-client stop barrier: clear Buttplug output/keepalive state, cancel stale queued writes, send verified BLE stop last; add connected/disconnected summaries. |
+| **0.3.0b11** | External-client stop barrier: clear Buttplug output/keepalive state, cancel stale queued writes, send verified BLE stop last; add connected/disconnected summaries. |
 | **0.3.0b9** | Pull a prebuilt multi-arch Engine image instead of compiling Rust locally during HA updates; retain persistent best-known names, active-scan/GATT name recovery and per-device connection policy. |
 | **0.3.0b6** | Service-fingerprint discovery for nameless BLE devices; post-connect GATT validation remains mandatory. |
 | **0.3.0b5** | Build repair for 0.3.0b4: valid Cargo SemVer internally (`0.3.0-b5`) while IntiHA/HA report `0.3.0b5`; master-switch behaviour unchanged. |
@@ -73,10 +73,10 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
 
-## Updating to 0.3.0b10
+## Updating to 0.3.0b11
 
 Update **both** the IntiHA HACS integration and **IntiHA Proxy Engine** to
-0.3.0b10. Before the first update from 0.3.0b6, turn **Server enabled** off and
+0.3.0b11. Before the first update from 0.3.0b6, turn **Server enabled** off and
 wait for Connected devices to reach 0; this avoids the old b6 shutdown path
 being held by a live BLE operation. Then update the Engine app and restart Home
 Assistant. **For b10, wait for the GitHub Action `Publish IntiHA app image` to finish successfully before pressing Update in Home Assistant.** Supervisor now pulls that prebuilt image instead of compiling the Rust engine locally. From b7 onward shutdown is bounded so Supervisor updates cannot wait indefinitely. Do not run the native-only 0.3.0b1 app alongside the Proxy Engine.

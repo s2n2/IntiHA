@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.3.0b10
+## 0.3.0b11
+
+- Build-recovery release: revert the unverified Rust stop-barrier changes introduced in b10 and restore the b8 engine command implementation.
+- Keep b10 connected/disconnected device summary sensors, device naming and per-device connection controls.
+- Fall back to Supervisor source builds while image publication is unverified.
+- This release does NOT fix the post-pulse restart issue. It prioritises restoring a buildable baseline.
+
+
+## 0.3.0b11
 
 - Fix external-client stop semantics so Buttplug clears its internal output/keepalive state before IntiHA sends the verified physical BLE stop.
 - Add a per-session output generation barrier so queued movement/keepalive writes created before a stop cannot run after the stop and restart a device at the previous level.
