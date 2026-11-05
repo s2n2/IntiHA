@@ -63,7 +63,7 @@
   "entity": {
     "switch": {
       "enabled": {
-        "name": "Enabled"
+        "name": "Server enabled"
       }
     },
     "button": {

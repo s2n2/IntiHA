@@ -1,38 +1,43 @@
 # IntiHA
 
-> **0.3.2 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. Do not install the native-only 0.3.0b1 app for this topology. The Proxy Engine never requires BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
+> **0.3.0b4 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
 
 
 **A plug-and-play Buttplug server using Home Assistant's Bluetooth coverage.**
 
 Start the engine, add the discovered integration, and turn on a compatible
-Bluetooth device. IntiHA finds it, connects it and creates its Home Assistant
-controls automatically. There are **no IntiHA tokens, device approval lists,
-MAC addresses or required search steps**.
+Bluetooth device. IntiHA passes BLE advertisements from Home Assistant to the
+official Buttplug device manager, which performs the normal Intiface protocol
+matching and creates controls for supported devices. There are **no IntiHA
+tokens, device approval lists, MAC addresses or required search steps**.
 
-Install the **HACS integration and IntiHA Engine app together**. The app runs
-the official Rust Buttplug server and device protocols. The integration
-connects them to Home Assistant's Bluetooth network and provides the HA
-controls and sensors. Home Assistant Container users can run the same engine
-with Docker Compose.
+Install the **HACS integration and IntiHA Proxy Engine together**. Home
+Assistant owns BLE scanning, adapter selection and GATT through its connectable
+adapters and ESPHome proxies. The Rust engine owns Buttplug protocol matching,
+device drivers and the external Buttplug server.
 
-**Version 0.3.2 - proxy-native Bluetooth transport beta.**
-### Important migration from 0.3.0b1 / 0.3.0b2
+**Version 0.3.0b4 - server master-switch beta.**
+The Home Assistant **Server enabled** switch now gates the complete user-facing
+Intiface service. When it is off, IntiHA stops outputs, discovery and BLE
+sessions, invalidates any external controller, and rejects new Buttplug
+WebSocket connections. The private Home Assistant bridge remains connected
+only so the same switch can turn the server back on.
 
-The Supervisor app slug is `intiha_engine`, preserving the existing 0.2.4 installation identity so Home Assistant upgrades it in place. If the experimental `intiha_proxy_engine` 0.3.0b3 app is still installed, uninstall that obsolete app before installing 0.3.2.
+This release removes IntiHA's exact protocol pre-filter. Every valid BLE
+candidate is handed to Buttplug's upstream matcher, so Intiface-supported BLE
+devices are no longer limited to the subset IntiHA happened to recognise in
+advance. A device is only exposed to Home Assistant after Buttplug accepts it
+as a viable protocol.
 
-After startup, the engine log must contain `transport="home_assistant_proxy"` and `local_bluetooth=false`. If a log still says `Bluetooth LE adapter not found`, it is coming from the old native engine, not this build.
+External clients now take control only after a valid Buttplug handshake. On
+takeover, timeout or disconnect, IntiHA sends the already verified stop plan
+while retaining a healthy BLE session instead of tearing it down and forcing a
+full reconnect. Hard stop/off/shutdown paths still disconnect where safety
+requires it.
 
-The integration now requests pairing for a Bond identified by the engine's
-`wevibe-8bit` profile, and learns other devices' requirements from explicit
-ATT authentication/encryption errors. It does not replay failed movement
-commands. The existing real stop-write verification still gates controls.
-One backend connection call is allowed per engine-owned attempt, rather than
-letting the retry helper silently make up to nine transient-error attempts.
-The Engine app may remain on **0.2.4 or 0.2.5**. No engine protocol, ESPHome
-configuration or Wi-Fi changes are needed for this patch. Physical Bond
-validation and multi-proxy roaming are still outstanding. See the
-[security and specification review](docs/BLUETOOTH_SECURITY_REVIEW.md).
+The proxy transport is BLE-only: Intiface hardware that needs a USB serial,
+HID, gamepad or other non-BLE hardware manager cannot be carried through an
+ESPHome Bluetooth proxy.
 
 This is an independent project, not an official Intiface or Home Assistant
 product.
@@ -45,6 +50,10 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
+| **0.3.0b4** | Make the HA master switch gate the complete user-facing Intiface server; Off rejects external clients and tears down BLE/discovery while retaining only the HA control bridge. |
+| **0.3.0b3** | Forward all HA BLE candidates to Buttplug's official matcher; external clients can command existing proxy sessions and release control without forcing a BLE reconnect. |
+| **0.3.0b2** | Restore the Home Assistant / ESPHome proxy transport as the production backend; no local Bluetooth adapter required. |
+| **0.3.0b1** | Native-engine experiment requiring a local Bluetooth adapter; superseded for proxy-only installations. |
 | **0.2.7** | Request BLE pairing for identified Bond / learned ATT security requirements; prevent the hidden nine-attempt retry loop; retain verified stops and no command replay. HACS-only runtime update. |
 | **0.2.6** | Remove automatic Bluetooth scan sweeps introduced in 0.2.5; retain manual Search and automatic advertisement discovery; improve scan deduplication. HACS only. |
 | **0.2.5** | Make Search perform an actual HA Bluetooth active sweep; add bounded periodic discovery for devices not visible from passive advertisements. HACS-only runtime change; the 0.2.4 Engine is compatible. |
@@ -55,27 +64,25 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
 
-## Updating to 0.2.7
+## Updating to 0.3.0b4
 
-Update the **IntiHA HACS integration** and restart Home Assistant. The
-**IntiHA Engine app does not need rebuilding**; versions 0.2.4 and 0.2.5
-remain compatible. The device page's Firmware value reports the engine
-version; check HACS for the integration version.
+Update **both** the IntiHA HACS integration and **IntiHA Proxy Engine** to
+0.3.0b4, then restart Home Assistant and the Engine. Do not run the native-only
+0.3.0b1 app alongside the Proxy Engine. No Bluetooth dongle is required.
 
-For the first encrypted connection, the peripheral may need its normal
-pairing mode. Keep other phone/remote controllers disconnected during this
-initial test. A proxy must support BLE pairing as well as active GATT
-connections. Unsupported pairing fails with a specific error; the integration
-does not silently fall back to an unencrypted control path.
+After restart, the IntiHA device should report **Bluetooth transport: Home
+Assistant Bluetooth / ESPHome proxies**. Existing ESPHome proxies only need to
+be connectable (`bluetooth_proxy: active: true`) with a free connection slot.
 
-The device Status entity has a `ble_pairing_required` attribute. This means
-IntiHA will request pairing on its next connection. It is **not** a live
-"encrypted" sensor, and does not enable controls by itself. Controls still
-require completed device initialisation and the real stop write.
+Discovery is intentionally broad in this release. IntiHA forwards valid BLE
+advertisements to Buttplug and lets its official device configuration decide
+whether a peripheral is supported. Devices that Buttplug rejects do not become
+IntiHA devices.
 
-The Git patch targets the supplied 0.2.6 source. The replacement-file ZIP can
-be overlaid at the repository root. Do not copy the archive into
-`custom_components/intiha` as an extra nested folder.
+External Buttplug clients still use the normal IntiHA WebSocket endpoint. A
+valid client handshake transfers control from Home Assistant; releasing the
+client sends a verified stop but retains healthy BLE links so the next
+controller does not need to rediscover and reconnect the hardware.
 
 ## Updating from 0.2.5
 

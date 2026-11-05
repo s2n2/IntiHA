@@ -264,6 +264,17 @@ async def test_stop_plan_executes_before_bridge_reset_disconnect(radio):
     assert radio.bridge.connected_addresses == {ADDRESS}
 
 
+async def test_verified_stop_can_be_sent_without_dropping_live_session(radio):
+    await radio.request("connect")
+    await radio.stop_plan()
+    result = await radio.request("stop")
+    assert result == {"verified": True, "connection_id": "first"}
+    assert radio.bridge.connected_addresses == {ADDRESS}
+    assert radio.clients[0].operations == [
+        ("write", CHARACTERISTIC, b"\x00", False),
+    ]
+
+
 async def test_stop_failure_is_reported_and_disconnect_still_runs(radio):
     await radio.request("connect")
     await radio.stop_plan()

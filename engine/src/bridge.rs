@@ -54,8 +54,7 @@ struct Candidate {
     next_attempt: Instant,
     attempts: u32,
     attempted: bool,
-    announced: bool,
-    protocols: Vec<String>,
+    protocol_hints: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,7 +74,7 @@ pub struct Session {
     pub inflight: AtomicU64,
     pub io_lock: tokio::sync::Mutex<()>,
     pub last_io_error: Mutex<Option<String>>,
-    pub classic_wevibe: bool,
+    pub classic_wevibe: AtomicBool,
     pub endpoints: RwLock<HashMap<Endpoint, String>>,
     pub write_modes: RwLock<HashMap<String, bool>>,
     pub stop_recording: Mutex<Option<Vec<StopWrite>>>,
@@ -94,7 +93,7 @@ impl Session {
             inflight: AtomicU64::new(0),
             io_lock: tokio::sync::Mutex::new(()),
             last_io_error: Mutex::new(None),
-            classic_wevibe,
+            classic_wevibe: AtomicBool::new(classic_wevibe),
             endpoints: RwLock::new(HashMap::new()),
             write_modes: RwLock::new(HashMap::new()),
             stop_recording: Mutex::new(None),
@@ -353,11 +352,7 @@ impl Bridge {
     }
 
     pub fn supported(&self, address: &str) -> bool {
-        self.candidates
-            .lock()
-            .unwrap()
-            .get(address)
-            .is_some_and(|candidate| candidate.announced)
+        self.candidates.lock().unwrap().contains_key(address)
     }
 
     pub async fn advertisement(&self, value: Value) {
@@ -377,20 +372,28 @@ impl Bridge {
         }
         advertisement.address = advertisement.address.to_uppercase();
         let specifier = advertisement.specifier();
-        let protocols: Vec<String> = self
+        // Keep exact matches only as optional hints (for narrow transport
+        // policies such as Bond pairing). They are NOT an admission filter.
+        // The official ServerDeviceManager must receive the advertisement and
+        // perform its own wildcard/manufacturer/service matching, exactly as
+        // it does with the normal btleplug hardware manager.
+        let protocol_hints: Vec<String> = self
             .configuration
             .base_communication_specifiers()
             .iter()
             .filter(|(_, specifiers)| specifiers.contains(&specifier))
             .map(|(name, _)| name.clone())
             .collect();
-        if protocols.is_empty() {
-            return;
-        }
-        let notify = {
+        {
             let mut candidates = self.candidates.lock().unwrap();
             if candidates.len() >= 256 && !candidates.contains_key(&advertisement.address) {
-                return;
+                if let Some(oldest) = candidates
+                    .iter()
+                    .min_by_key(|(_, candidate)| candidate.seen)
+                    .map(|(address, _)| address.clone())
+                {
+                    candidates.remove(&oldest);
+                }
             }
             let candidate = candidates
                 .entry(advertisement.address.clone())
@@ -400,28 +403,11 @@ impl Bridge {
                     next_attempt: Instant::now(),
                     attempts: 0,
                     attempted: false,
-                    announced: false,
-                    protocols: protocols.clone(),
+                    protocol_hints: protocol_hints.clone(),
                 });
             candidate.advertisement = advertisement.clone();
             candidate.seen = Instant::now();
-            candidate.protocols = protocols.clone();
-            !candidate.announced
-        };
-        if notify || self.scanning.load(Ordering::SeqCst) {
-            let sent = self.send(json!({"type":"discovered", "address":advertisement.address,
-                "name":advertisement.name,"protocols":protocols,"rssi":advertisement.rssi,"source":advertisement.source})).await;
-            if sent.is_ok()
-                && let Some(candidate) = self
-                    .candidates
-                    .lock()
-                    .unwrap()
-                    .get_mut(&advertisement.address)
-            {
-                // Admission at HA follows this event. Do not issue connect
-                // before it is queued, including when discovery races a tick.
-                candidate.announced = true;
-            }
+            candidate.protocol_hints = protocol_hints;
         }
     }
 
@@ -460,8 +446,7 @@ impl Bridge {
             candidates
                 .values_mut()
                 .filter_map(|candidate| {
-                    if !candidate.announced
-                        || connected.contains(&candidate.advertisement.address)
+                    if connected.contains(&candidate.advertisement.address)
                         || connecting.contains(&candidate.advertisement.address)
                         || now.duration_since(candidate.seen) > Duration::from_secs(120)
                         || candidate.next_attempt > now
@@ -473,19 +458,19 @@ impl Bridge {
                     }
                     candidate.attempted = true;
                     candidate.next_attempt = now + Duration::from_secs(60);
-                    Some((candidate.advertisement.clone(), candidate.protocols.clone()))
+                    Some((candidate.advertisement.clone(), candidate.protocol_hints.clone()))
                 })
                 .take(4)
                 .collect()
         };
-        for (advertisement, protocols) in due {
+        for (advertisement, protocol_hints) in due {
             let event = HardwareCommunicationManagerEvent::DeviceFound {
                 name: advertisement.name.clone(),
                 address: advertisement.address.clone(),
                 creator: Box::new(crate::hardware::HaConnector::new(
                     self.clone(),
                     advertisement,
-                    protocols,
+                    protocol_hints,
                 )),
             };
             if sender.send(event).await.is_err() {
@@ -573,6 +558,31 @@ impl Bridge {
         let _ = self
             .send(json!({"type":"output_clear","address":session.address}))
             .await;
+        result.map(|_| ())
+    }
+
+    /// Send the verified cached stop plan while keeping the BLE session alive.
+    /// This is used for external-client handover/disconnect so a controller
+    /// cannot leave an actuator running, without needlessly tearing down the
+    /// proxy connection and forcing a rediscovery cycle.
+    pub async fn stop_session(&self, session: &Arc<Session>) -> DeviceResult<()> {
+        if !session.connected.load(Ordering::SeqCst) || !session.ready.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let result = self
+            .rpc(
+                json!({"op":"stop","address":session.address,"connection_id":session.id}),
+                Duration::from_secs(8),
+            )
+            .await;
+        let _ = self
+            .send(json!({"type":"output_clear","address":session.address}))
+            .await;
+        if result.is_err() {
+            // A failed stop means physical state is uncertain. Retire this
+            // session so no later command can target a possibly moving device.
+            self.invalidate(&session.id);
+        }
         result.map(|_| ())
     }
 
@@ -753,18 +763,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continuous_discovery_ignores_unsupported_devices_and_respects_off() {
+    async fn continuous_discovery_forwards_candidates_to_official_matcher_and_respects_off() {
         let bridge = discovery_bridge();
-        let (tx, mut rx) = mpsc::channel(4);
+        let (tx, _rx) = mpsc::channel(4);
         bridge.attach(tx);
         let (manager, mut found) = mpsc::channel(4);
         bridge.install_manager(manager);
         bridge.advertisement(json!({"address":"AA:BB:CC:DD:EE:02","name":"ordinary temperature sensor","service_uuids":[],"manufacturer_data":{}})).await;
-        assert!(rx.try_recv().is_err());
-        assert!(bridge.candidates.lock().unwrap().is_empty());
-
-        bridge.advertisement(known_advertisement()).await;
-        assert_eq!(rx.recv().await.unwrap()["type"], "discovered");
+        assert_eq!(bridge.candidates.lock().unwrap().len(), 1);
         bridge.discover_due().await;
         assert!(
             found.try_recv().is_err(),
@@ -773,41 +779,26 @@ mod tests {
         bridge.configure(&json!({"enabled":true})).unwrap();
         bridge.discover_due().await;
         assert!(
-            matches!(found.try_recv().unwrap(), HardwareCommunicationManagerEvent::DeviceFound { address, .. } if address == "AA:BB:CC:DD:EE:01")
+            matches!(found.try_recv().unwrap(), HardwareCommunicationManagerEvent::DeviceFound { address, .. } if address == "AA:BB:CC:DD:EE:02")
         );
     }
 
     #[tokio::test]
-    async fn connect_waits_until_discovery_is_queued_for_home_assistant() {
+    async fn candidate_admission_does_not_depend_on_intiha_protocol_prefiltering() {
         let bridge = discovery_bridge();
-        let (tx, mut rx) = mpsc::channel(1);
-        tx.send(json!({"type":"queue_filler"})).await.unwrap();
+        let (tx, _rx) = mpsc::channel(1);
         bridge.attach(tx);
         bridge.configure(&json!({"enabled":true})).unwrap();
         let (manager, mut found) = mpsc::channel(4);
         bridge.install_manager(manager);
-        let b = bridge.clone();
-        let announcement = tokio::spawn(async move {
-            b.advertisement(known_advertisement()).await;
-        });
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if !bridge.candidates.lock().unwrap().is_empty() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        bridge.advertisement(json!({"address":"AA:BB:CC:DD:EE:03","name":"LVS-TEST","service_uuids":[],"manufacturer_data":{}})).await;
+        assert!(bridge.supported("AA:BB:CC:DD:EE:03"));
         bridge.discover_due().await;
-        assert!(found.try_recv().is_err());
-        assert!(!bridge.supported("AA:BB:CC:DD:EE:01"));
-        assert_eq!(rx.recv().await.unwrap()["type"], "queue_filler");
-        announcement.await.unwrap();
-        assert_eq!(rx.recv().await.unwrap()["type"], "discovered");
-        bridge.discover_due().await;
-        assert!(found.try_recv().is_ok());
+        assert!(matches!(
+            found.try_recv().unwrap(),
+            HardwareCommunicationManagerEvent::DeviceFound { address, .. }
+                if address == "AA:BB:CC:DD:EE:03"
+        ));
     }
 
     #[tokio::test]
@@ -821,7 +812,6 @@ mod tests {
             .configure(&json!({"enabled":true,"auto_reconnect":false}))
             .unwrap();
         bridge.advertisement(known_advertisement()).await;
-        rx.recv().await.unwrap();
         bridge.discover_due().await;
         assert!(found.try_recv().is_ok());
         {

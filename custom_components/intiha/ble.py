@@ -43,6 +43,7 @@ _OPS = frozenset(
     {
         "connect",
         "disconnect",
+        "stop",
         "read",
         "write",
         "subscribe",
@@ -254,6 +255,37 @@ class BleBridge:
                 if not stopped:
                     raise BleBridgeError("Stop could not be sent before disconnecting the device")
                 return {}
+            if op == "stop":
+                if not connection.stop_plan:
+                    raise BleBridgeError("No verified stop plan is available for this connection")
+                try:
+                    await self._send_stop_plan(connection)
+                except BaseException as err:
+                    if self._connections.get(address) is connection:
+                        self._connections.pop(address)
+                    await self._disconnect_client(connection.client)
+                    await self._emit_safely(
+                        {
+                            "type": "stop_failed",
+                            "address": connection.address,
+                            "connection_id": connection.connection_id,
+                            "reason": "Stop could not be confirmed; Bluetooth link retired",
+                        }
+                    )
+                    await self._emit_safely(
+                        {
+                            "type": "disconnected",
+                            "address": connection.address,
+                            "connection_id": connection.connection_id,
+                            "reason": "stop_failed",
+                        }
+                    )
+                    if isinstance(err, asyncio.CancelledError):
+                        raise
+                    raise BleBridgeError(
+                        f"Stop GATT write failed: {str(err).strip() or type(err).__name__}"
+                    ) from err
+                return {"verified": True, "connection_id": connection.connection_id}
             if not connection.client.is_connected:
                 self._connection_lost(address, connection_id, "link_lost")
                 raise BleBridgeError("BLE connection is no longer connected")

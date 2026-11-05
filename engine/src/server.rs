@@ -197,6 +197,38 @@ impl App {
         result
     }
 
+    /// Stop all currently ready outputs without retiring healthy BLE links.
+    ///
+    /// External clients are allowed to take/release control frequently. A
+    /// control handover must force a verified physical stop, but disconnecting
+    /// every ESPHome-proxied device on each handover makes the next command
+    /// race a full reconnect and service-discovery cycle. The HA side keeps a
+    /// verified per-session stop plan specifically so we can stop in place.
+    async fn stop_outputs(&self) -> Result<(), String> {
+        *self.bridge.manual_deadline.lock().unwrap() = None;
+        let sessions: Vec<_> = self
+            .bridge
+            .all_sessions()
+            .into_iter()
+            .filter(|session| {
+                session.connected.load(Ordering::SeqCst)
+                    && session.ready.load(Ordering::SeqCst)
+            })
+            .collect();
+        let results = futures::future::join_all(
+            sessions.iter().map(|session| self.bridge.stop_session(session)),
+        )
+        .await;
+        if let Some(error) = results.into_iter().find_map(Result::err) {
+            let message = format!("Stop could not be confirmed: {error}");
+            *self.bridge.last_error.lock().unwrap() = Some(message.clone());
+            let _ = self.bridge.send(self.bridge.status()).await;
+            return Err(message);
+        }
+        let _ = self.bridge.send(json!({"type":"output_clear"})).await;
+        Ok(())
+    }
+
     async fn stop_device(&self, index: u32) -> Result<(), String> {
         let info = self
             .manager
@@ -208,6 +240,24 @@ impl App {
             .ok_or("Device has no live Bluetooth session")?;
         self.bridge
             .disconnect_session(&session)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Buttplug StopDevice semantics are an actuator stop, not a request to
+    /// tear down the transport. External clients commonly stop before or
+    /// between commands, so preserve the verified BLE session.
+    async fn stop_device_output(&self, index: u32) -> Result<(), String> {
+        let info = self
+            .manager
+            .device_info(index)
+            .ok_or("Device is not connected")?;
+        let session = self
+            .bridge
+            .session_for(info.identifier().address())
+            .ok_or("Device has no live Bluetooth session")?;
+        self.bridge
+            .stop_session(&session)
             .await
             .map_err(|e| e.to_string())
     }
@@ -687,8 +737,12 @@ fn is_movement(name: &str) -> bool {
     )
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({"status":"ok","version":VERSION}))
+async fn health(State(app): State<Arc<App>>) -> Json<Value> {
+    Json(json!({
+        "status":"ok",
+        "version":VERSION,
+        "server_enabled":client_server_available(&app)
+    }))
 }
 async fn bridge_upgrade(State(app): State<Arc<App>>, ws: WebSocketUpgrade) -> Response {
     if app.stopping.load(Ordering::SeqCst) {
@@ -705,8 +759,15 @@ async fn bridge_upgrade(State(app): State<Arc<App>>, ws: WebSocketUpgrade) -> Re
         })
         .into_response()
 }
+fn client_server_available(app: &App) -> bool {
+    !app.stopping.load(Ordering::SeqCst) && app.bridge.enabled.load(Ordering::SeqCst)
+}
+
 async fn client_upgrade(State(app): State<Arc<App>>, ws: WebSocketUpgrade) -> Response {
-    if app.stopping.load(Ordering::SeqCst) {
+    // The HA bridge is deliberately kept alive while disabled so the same
+    // switch can turn the server back on. The public Buttplug server itself
+    // is unavailable while the master switch is off.
+    if !client_server_available(&app) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let Ok(permit) = app.client_slot.clone().try_acquire_owned() else {
@@ -827,16 +888,10 @@ async fn bridge_connection(app: Arc<App>, mut socket: WebSocket) {
 }
 
 async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
-    // Transfer ownership only after issuing a real stop for any HA manual output.
-    let guard = app.admin_lock.lock().await;
-    let manual_active = app.bridge.manual_deadline.lock().unwrap().is_some();
-    if manual_active {
-        let _ = app.stop_all().await;
-    }
-    app.bridge.external_active.store(true, Ordering::SeqCst);
-    let control_epoch = app.bridge.control_epoch.load(Ordering::SeqCst);
-    drop(guard);
-    let _ = app.bridge.send(app.bridge.status()).await;
+    // A TCP/WebSocket connection is not yet a controller. Do not revoke HA
+    // ownership until the Buttplug handshake has actually completed.
+    let mut owns_control = false;
+    let mut control_epoch = app.bridge.control_epoch.load(Ordering::SeqCst);
     let Ok(server) = ButtplugServerBuilder::with_shared_device_manager(app.manager.clone())
         .name("IntiHA")
         .max_ping_time(20_000)
@@ -876,8 +931,8 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                                     if let Some(name) = stop_name
                                         && (name != "StopCmd" || value[name]["Outputs"].as_bool().unwrap_or(true)) {
                                             let result = if let Some(index) = value[name]["DeviceIndex"].as_u64() {
-                                                app.stop_device(index as u32).await
-                                            } else { app.stop_all().await };
+                                                app.stop_device_output(index as u32).await
+                                            } else { app.stop_outputs().await };
                                             let response = match result {
                                                 Ok(()) => Message::Text(json!([{"Ok":{"Id":id}}]).to_string().into()),
                                                 Err(error) => error_message(id,&format!("Stop could not be confirmed: {error}")),
@@ -889,8 +944,29 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                             let result = tokio::time::timeout(Duration::from_secs(20), server.parse_message(message)).await;
                             let response = match result {
                                 Ok(Ok(response)) | Ok(Err(response)) => serializer.serialize(&[response]),
-                                Err(_) => { let _ = app.stop_all().await; let _ = bounded_send(&mut socket, error_message(id,"Device operation timed out; stop attempted, physical state unconfirmed")).await; continue; }
+                                Err(_) => {
+                                    let stopped = app.stop_outputs().await.is_ok();
+                                    let detail = if stopped {
+                                        "Device operation timed out; verified stop sent and BLE session retained"
+                                    } else {
+                                        "Device operation timed out; stop could not be confirmed"
+                                    };
+                                    let _ = bounded_send(&mut socket, error_message(id,detail)).await;
+                                    continue;
+                                }
                             };
+                            if server.connected() && !owns_control {
+                                // Transfer ownership only after a valid handshake, and
+                                // first force any HA-manual output to a verified stop
+                                // without dropping the healthy BLE session.
+                                if app.bridge.manual_deadline.lock().unwrap().is_some() {
+                                    let _ = app.stop_outputs().await;
+                                }
+                                app.bridge.external_active.store(true, Ordering::SeqCst);
+                                owns_control = true;
+                                control_epoch = app.bridge.control_epoch.load(Ordering::SeqCst);
+                                let _ = app.bridge.send(app.bridge.status()).await;
+                            }
                             if let ButtplugSerializedMessage::Text(text) = response
                                 && !bounded_send(&mut socket, Message::Text(text.into())).await { break; }
                         }
@@ -914,9 +990,11 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
         }
     }
     let _ = tokio::time::timeout(Duration::from_secs(20), server.disconnect()).await;
-    let _ = app.stop_all().await;
-    app.bridge.external_active.store(false, Ordering::SeqCst);
-    let _ = app.bridge.send(app.bridge.status()).await;
+    if owns_control {
+        let _ = app.stop_outputs().await;
+        app.bridge.external_active.store(false, Ordering::SeqCst);
+        let _ = app.bridge.send(app.bridge.status()).await;
+    }
     let _ = tokio::time::timeout(Duration::from_secs(2), socket.close()).await;
 }
 
@@ -975,6 +1053,28 @@ mod tests {
         config.bridge_port = 12346;
         assert!(config.validate().is_ok());
     }
+    #[tokio::test]
+    async fn master_switch_gates_the_external_buttplug_server() {
+        let app = App::new(Config {
+            bind: "127.0.0.1".into(),
+            client_port: 0,
+            bridge_port: 1,
+        })
+        .await
+        .unwrap();
+
+        assert!(!client_server_available(&app));
+        app.bridge.configure(&json!({"enabled":true})).unwrap();
+        assert!(client_server_available(&app));
+
+        let epoch = app.bridge.control_epoch.load(Ordering::SeqCst);
+        app.bridge.configure(&json!({"enabled":false})).unwrap();
+        assert!(!client_server_available(&app));
+        assert!(app.bridge.control_epoch.load(Ordering::SeqCst) > epoch);
+
+        app.shutdown().await;
+    }
+
     #[tokio::test]
     async fn starts_disabled_and_uses_official_v3_handshake() {
         let app = App::new(Config {

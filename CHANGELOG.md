@@ -1,18 +1,31 @@
 # Changelog
 
-## 0.3.2
+## 0.3.0b4
 
-- Fix release versioning for Cargo: use valid SemVer `0.3.2` in both `Cargo.toml` and `Cargo.lock`.
-- Keep the Supervisor slug `intiha_engine` so existing 0.2.4 installations upgrade in place.
-- Remove stale guidance that incorrectly told users to use the experimental `intiha_proxy_engine` slug.
-- The obsolete 0.3.0b3 proxy app used invalid Rust version `0.3.0b3` and must be uninstalled if still present.
+Master switch now gates the whole user-facing Intiface server.
 
-## 0.3.1
+- Rename the Home Assistant master toggle to **Server enabled**.
+- Turning it off immediately marks the engine disabled, cancels scanning, stops outputs, disconnects BLE sessions, clears discovered/connected device state and invalidates any current external-controller ownership.
+- New external Buttplug WebSocket connections to `/` or `/buttplug` are rejected with HTTP 503 while disabled. Existing external clients are invalidated by the control-epoch barrier and close on their next activity/heartbeat.
+- Keep only the private Home Assistant bridge/control channel alive while disabled. This is intentional: without that channel the same Home Assistant toggle could not turn the server back on.
+- Turning the toggle on immediately makes the external Buttplug endpoint available again and resumes proxy-native discovery/reconnect behaviour.
+- Add an engine regression test for disabled → enabled → disabled external-server gating and control-epoch invalidation.
 
-- Experimental note: 0.3.1 packaging briefly used a separate proxy-engine slug; 0.3.2 supersedes that approach and restores `intiha_engine` for in-place upgrades.
-- Add an explicit startup log marker showing `transport=home_assistant_proxy` and `local_bluetooth=false`.
-- Keep the Home Assistant / ESPHome-proxy transport only; no local Bluetooth adapter, BlueZ, D-Bus or btleplug manager is used.
-- Retain the 0.3.0b2 proxy transport and reconstructed 0.2.7 connection/security fixes.
+## 0.3.0b3
+
+Broad Intiface BLE discovery and external-client handover fix.
+
+- Remove IntiHA's exact communication-specifier admission filter. Every valid Home Assistant BLE candidate is forwarded to the official Buttplug `ServerDeviceManager`, which performs its normal wildcard, manufacturer-data, service and name matching.
+- Only announce a device to Home Assistant after the upstream Buttplug manager accepts the connector as a viable supported protocol, avoiding false-positive HA devices while no longer hiding valid Intiface BLE hardware.
+- Keep a bounded candidate cache and evict the oldest unseen candidate when full instead of permanently rejecting newly observed peripherals.
+- Treat the local `protocol_hints` list as a transport/security hint only; it is never used to decide whether a device may reach Buttplug.
+- External WebSocket connections no longer seize control merely by opening a socket. Ownership transfers after a valid Buttplug handshake.
+- Add a verified stop-in-place bridge operation. External-client takeover, command timeout and disconnect stop outputs without tearing down a healthy proxy GATT session.
+- Treat external `StopAllDevices` / `StopDeviceCmd` as actuator stops, not transport disconnects, so clients that issue routine safety stops can continue sending commands on the same proxied session.
+- Retain hard disconnect behaviour for master-off, shutdown, failed/uncertain stop and stale-session safety paths.
+- Detect classic We-Vibe stop handling from the specialised GATT endpoint rather than from IntiHA's pre-match protocol name, keeping device-specific safety logic after broad discovery.
+- Add regression coverage for an arbitrary BLE candidate reaching the upstream matcher, verified stop without disconnect, and an external v3 client driving an existing proxied session then releasing it without reconnect.
+- Scope: broad matching applies to Intiface-supported **BLE** devices reachable through Home Assistant Bluetooth. Non-BLE Intiface hardware managers (for example USB serial/HID/gamepad transports) are not provided by an ESPHome BLE proxy.
 
 ## 0.3.0b2
 
@@ -200,9 +213,3 @@ Initial implementation for physical hardware evaluation.
   ownership, generation isolation, stop-plan fallback and no command replay.
 - Automated HA, BLE-transport, Rust and cross-process tests; CI metadata and
   app-image checks; physical acceptance procedure.
-
-## 0.3.1
-
-- Proxy-native engine replaces the existing `intiha_engine` app in-place.
-- Restores the original Supervisor slug so installed 0.2.4 systems receive an upgrade rather than a second app.
-- No local Bluetooth adapter is required; all BLE transport remains through Home Assistant / ESPHome Bluetooth proxies.

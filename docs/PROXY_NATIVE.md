@@ -1,6 +1,6 @@
-# Proxy-native Bluetooth transport: 0.3.2
+# Proxy-native Bluetooth transport: 0.3.0b3
 
-IntiHA 0.3.2 does **not** require a USB, PCIe or host Bluetooth adapter.
+IntiHA 0.3.0b3 does **not** require a USB, PCIe or host Bluetooth adapter.
 
 The supported runtime path is:
 
@@ -11,31 +11,80 @@ BLE device
   -> IntiHA HACS integration BLE bridge
   -> IntiHA Proxy Engine hardware manager
   -> upstream Buttplug protocol matcher/driver
-  -> Home Assistant entities / Buttplug clients
+  -> Home Assistant entities / external Buttplug clients
 ```
+
+## Discovery and protocol matching
+
+IntiHA does not maintain an allow-list of toy brands or protocols. Valid BLE
+advertisements received from Home Assistant are cached and passed to the
+upstream Buttplug `ServerDeviceManager`. Buttplug performs its normal protocol
+matching, including the name, service and manufacturer-data rules in its device
+configuration.
+
+The HACS integration is told that a device is discovered only after Buttplug
+accepts the connector as a viable protocol. This keeps arbitrary nearby BLE
+sensors out of IntiHA while allowing the full set of Intiface-supported BLE
+protocols to use the HA proxy transport.
+
+`protocol_hints` retained by the bridge are advisory only. They may inform a
+narrow transport/security policy such as known pairing behaviour, but they do
+not admit or reject devices.
+
+This transport is intentionally BLE-only. Intiface devices that require a USB
+serial, HID, gamepad or another non-BLE hardware manager cannot be carried over
+an ESPHome Bluetooth proxy.
 
 ## Ownership boundary
 
-Home Assistant owns scanner discovery, adapter selection, connection slots and the
-actual Bleak/ESPHome GATT client. The HACS integration exposes a bounded bridge
-for connect, disconnect, read, write, subscribe and unsubscribe operations.
+Home Assistant owns scanner discovery, adapter selection, connection slots and
+the actual Bleak/ESPHome GATT client. The HACS integration exposes a bounded
+bridge for connect, stop, disconnect, read, write, subscribe and unsubscribe
+operations.
 
 The Rust Engine does not enumerate Linux Bluetooth hardware and does not start a
 native `btleplug` scanner. It receives HA advertisements over the bridge and
 implements Buttplug's hardware traits using bridge RPCs. The upstream Buttplug
-configuration and protocol drivers still identify supported devices and generate
-the device-specific operations.
+configuration and protocol drivers identify supported devices and generate the
+device-specific operations.
+
+## External client handover
+
+Opening the public WebSocket does not itself take control. Ownership transfers
+only after the external client completes a valid Buttplug handshake.
+
+When control changes hands, an external command times out, or the external
+client disconnects, IntiHA sends the verified per-session stop plan while
+keeping healthy BLE connections alive. That prevents a controller from leaving
+an actuator running without forcing a complete proxy reconnect before the next
+command.
+
+A failed or unconfirmed stop retires the affected BLE session. Master off,
+engine shutdown and other hard safety paths retain their existing disconnect
+behaviour.
 
 ## Safety / reconnect behaviour
 
-A BLE connection receives a unique generation id. Reads/writes/subscriptions from
-an expired generation are rejected rather than replayed after reconnect. Device
-connection attempts are serialised per address and bounded. Stop preparation is
-verified before a device is exposed as ready. A failed or uncertain stop remains
-visible in HA diagnostics.
+A BLE connection receives a unique generation id. Reads/writes/subscriptions
+from an expired generation are rejected rather than replayed after reconnect.
+Device connection attempts are serialised per address and bounded. Stop
+preparation is verified before a device is exposed as ready. A failed or
+uncertain stop remains visible in HA diagnostics.
 
 ## Proxy requirements
 
-An ESPHome proxy used for control must be configured with `bluetooth_proxy:\n  active: true`
-and must appear in Home Assistant as connectable with a free connection slot.
-Passive-only scanners can contribute advertisements but cannot carry GATT control.
+An ESPHome proxy used for control must be configured with:
+
+```yaml
+bluetooth_proxy:
+  active: true
+```
+
+It must appear in Home Assistant as connectable with a free connection slot.
+Passive-only scanners can contribute advertisements but cannot carry GATT
+control.
+
+
+## Master server switch
+
+The Home Assistant **Server enabled** entity is the master runtime gate. Off stops outputs, disconnects BLE sessions, cancels discovery, invalidates external control and makes the public Buttplug WebSocket endpoints return HTTP 503. The HA bridge remains connected only as the private control plane required to turn the server back on.

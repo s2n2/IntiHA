@@ -57,14 +57,18 @@ impl HardwareCommunicationManager for HaManager {
 pub struct HaConnector {
     bridge: Arc<Bridge>,
     advertisement: Advertisement,
-    protocols: Vec<String>,
+    protocol_hints: Vec<String>,
 }
 impl HaConnector {
-    pub fn new(bridge: Arc<Bridge>, advertisement: Advertisement, protocols: Vec<String>) -> Self {
+    pub fn new(
+        bridge: Arc<Bridge>,
+        advertisement: Advertisement,
+        protocol_hints: Vec<String>,
+    ) -> Self {
         Self {
             bridge,
             advertisement,
-            protocols,
+            protocol_hints,
         }
     }
 }
@@ -108,6 +112,21 @@ impl HardwareConnector for HaConnector {
             return Err(device_error("Device already has a BLE connection"));
         }
         let id = Uuid::new_v4().to_string();
+        // Reaching HardwareConnector::connect means the official Buttplug
+        // device manager accepted this advertisement as a viable protocol.
+        // Only now expose it to Home Assistant as an Intiface device. This
+        // avoids both false positives and IntiHA pre-filtering valid devices.
+        let _ = self
+            .bridge
+            .send(json!({
+                "type":"discovered",
+                "address":address,
+                "name":self.advertisement.name.clone(),
+                "protocols":self.protocol_hints.clone(),
+                "rssi":self.advertisement.rssi,
+                "source":self.advertisement.source.clone()
+            }))
+            .await;
         self.bridge
             .device_status(address, &id, "connecting", None)
             .await;
@@ -162,11 +181,7 @@ impl HardwareConnector for HaConnector {
                 ));
             }
         };
-        let session = Arc::new(Session::new(
-            address,
-            &id,
-            self.protocols.iter().any(|p| p == "wevibe"),
-        ));
+        let session = Arc::new(Session::new(address, &id, false));
         self.bridge.register(session.clone());
         self.bridge
             .device_status(address, &id, "initialising", None)
@@ -232,6 +247,12 @@ impl HardwareSpecializer for HaSpecializer {
             ));
         }
         let endpoint_list: Vec<_> = endpoints.keys().copied().collect();
+        self.session.classic_wevibe.store(
+            endpoints
+                .values()
+                .any(|uuid| uuid.eq_ignore_ascii_case(CLASSIC_WEVIBE_TX)),
+            Ordering::SeqCst,
+        );
         *self.session.endpoints.write().unwrap() = endpoints;
         *self.session.write_modes.write().unwrap() = write_modes;
         Ok(Hardware::new(
@@ -327,7 +348,7 @@ const CLASSIC_WEVIBE_MOTORS_OFF: [u8; 8] = [0x0f, 0, 0, 0, 0, 0, 0, 0];
 /// A connected BLE characteristic and supported write mode are mandatory;
 /// there is no generic guessed-byte fallback for unknown protocols.
 pub(crate) fn classic_wevibe_stop_write(session: &Session) -> Option<StopWrite> {
-    if !session.classic_wevibe {
+    if !session.classic_wevibe.load(Ordering::SeqCst) {
         return None;
     }
     let endpoints = session.endpoints.read().unwrap();
@@ -401,7 +422,7 @@ impl HardwareInternal for HaHardware {
             .unwrap_or_default();
         let data = safe_initial_write(
             self.session.first_write.swap(false, Ordering::SeqCst),
-            self.session.classic_wevibe,
+            self.session.classic_wevibe.load(Ordering::SeqCst),
             &characteristic,
             message.data(),
         );

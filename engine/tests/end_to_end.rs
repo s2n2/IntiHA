@@ -304,6 +304,109 @@ async fn official_v3_and_v4_clients_connect_without_tokens_and_have_exclusive_co
 }
 
 #[tokio::test]
+async fn external_v3_client_can_drive_existing_proxy_device_and_release_it_without_reconnect() {
+    let h = Harness::start().await;
+    let device = h.ready().await;
+    let connection_id = device["connection_id"].as_str().unwrap().to_owned();
+    let (mut socket, _) = connect_async(&h.client_url).await.unwrap();
+    let writes_before = h.writes.lock().unwrap().len();
+    socket
+        .send(Message::Text(
+            json!([{"RequestServerInfo":{"Id":1,"ClientName":"External command test","MessageVersion":3}}])
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    loop {
+        match socket.next().await.unwrap().unwrap() {
+            Message::Text(t) if serde_json::from_str::<Value>(&t).unwrap()[0].get("ServerInfo").is_some() => break,
+            Message::Ping(v) => socket.send(Message::Pong(v)).await.unwrap(),
+            _ => {}
+        }
+    }
+    // Normal Buttplug clients may issue StopAll as a safety command before
+    // movement. It must stop outputs without retiring the proxy GATT session.
+    socket
+        .send(Message::Text(
+            json!([{"StopAllDevices":{"Id":2}}]).to_string().into(),
+        ))
+        .await
+        .unwrap();
+    loop {
+        match socket.next().await.unwrap().unwrap() {
+            Message::Text(t) => {
+                let value = serde_json::from_str::<Value>(&t).unwrap();
+                if value[0].get("Ok").is_some() {
+                    break;
+                }
+                if value[0].get("Error").is_some() {
+                    panic!("StopAllDevices failed: {value}");
+                }
+            }
+            Message::Ping(v) => socket.send(Message::Pong(v)).await.unwrap(),
+            _ => {}
+        }
+    }
+    let session_after_stop = h.app.bridge.session(&connection_id).unwrap();
+    assert!(session_after_stop.connected.load(Ordering::SeqCst));
+    assert!(session_after_stop.ready.load(Ordering::SeqCst));
+
+    socket
+        .send(Message::Text(
+            json!([{"ScalarCmd":{"Id":3,"DeviceIndex":device["DeviceIndex"],"Scalars":[{"Index":0,"Scalar":0.4,"ActuatorType":"Vibrate"}]}}])
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match socket.next().await.unwrap().unwrap() {
+                Message::Text(t) => {
+                    let value = serde_json::from_str::<Value>(&t).unwrap();
+                    if value[0].get("Ok").is_some() || value[0].get("Error").is_some() {
+                        break value;
+                    }
+                }
+                Message::Ping(v) => socket.send(Message::Pong(v)).await.unwrap(),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(response[0].get("Ok").is_some(), "{response}");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let reached_gatt = {
+                let writes = h.writes.lock().unwrap();
+                writes.len() > writes_before
+                    && writes[writes_before..]
+                        .iter()
+                        .any(|v| v["data"] != json!([15, 0, 0, 0, 0, 0, 0, 0]))
+            };
+            if reached_gatt {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("External command must reach the HA-proxied GATT session");
+    let mut events = h.events.subscribe();
+    socket.close(None).await.unwrap();
+    Harness::wait(&mut events, |v| {
+        v["type"] == "status" && v["client_connected"] == false
+    })
+    .await;
+    let session = h.app.bridge.session(&connection_id).unwrap();
+    assert!(session.connected.load(Ordering::SeqCst));
+    assert!(session.ready.load(Ordering::SeqCst));
+    h.finish().await;
+}
+
+#[tokio::test]
 async fn reconnect_uses_new_session_and_keeps_output_stopped() {
     let h = Harness::start().await;
     let first = h.ready().await;
