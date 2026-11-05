@@ -142,7 +142,7 @@
         }
       },
       "connected_devices": {
-        "name": "Connected devices"
+        "name": "Currently connected"
       },
       "discovered_devices": {
         "name": "Discovered devices"
@@ -167,6 +167,12 @@
       },
       "transport": {
         "name": "Bluetooth transport"
+      },
+      "disconnected_devices": {
+        "name": "Known but not connected"
+      },
+      "disabled_devices": {
+        "name": "Connection disabled"
       }
     }
   },

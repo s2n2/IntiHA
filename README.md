@@ -1,6 +1,6 @@
 # IntiHA
 
-> **0.3.0b12 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
+> **0.3.0b14 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
 
 
 **A plug-and-play Buttplug server using Home Assistant's Bluetooth coverage.**
@@ -16,11 +16,11 @@ Assistant owns BLE scanning, adapter selection and GATT through its connectable
 adapters and ESPHome proxies. The Rust engine owns Buttplug protocol matching,
 device drivers and the external Buttplug server.
 
-**Version 0.3.0b12 - proxy recovery and clearer connection diagnostics beta.**
+**Version 0.3.0b14 - proxy recovery and clearer connection diagnostics beta.**
 
 0.3.0b9 keeps the broad/service-fingerprint discovery from 0.3.0b6 and the persistent identity fixes from b8. The Engine app is now distributed as a prebuilt multi-architecture GHCR image, so Home Assistant updates pull the finished image instead of compiling Rust locally at 0% progress. Device identity remains persistent. IntiHA now remembers the best specific name it has learned for each Bluetooth address, actively asks Home Assistant for scan-response names when a supported device is otherwise generic, and can recover the standard BLE Device Name after connection. A later generic Buttplug label can no longer downgrade a learned name such as **Bond**. Each discovered device retains the persistent **Connect to this device** switch introduced in b7.
 
-0.3.0b12 adds per-device retry cooldowns for unavailable ESPHome proxy slots and BLE connection timeouts, plus more informative device statuses. It retains the b11 engine behaviour and existing safety safeguards; the earlier pulse restart issue remains under investigation. The hub exposes separate **Currently connected** and **Disconnected devices** summaries.
+0.3.0b14 adds per-device retry cooldowns for unavailable ESPHome proxy slots and BLE connection timeouts, plus more informative device statuses. It retains the b11 engine behaviour and existing safety safeguards; the earlier pulse restart issue remains under investigation. The hub exposes separate **Currently connected** and **Disconnected devices** summaries.
 
 The Home Assistant **Server enabled** switch gates the complete user-facing
 Intiface service. When it is off, IntiHA stops outputs, discovery and BLE
@@ -55,7 +55,7 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
-| **0.3.0b12** | External-client stop barrier: clear Buttplug output/keepalive state, cancel stale queued writes, send verified BLE stop last; add connected/disconnected summaries. |
+| **0.3.0b14** | External-client stop barrier: clear Buttplug output/keepalive state, cancel stale queued writes, send verified BLE stop last; add connected/disconnected summaries. |
 | **0.3.0b9** | Pull a prebuilt multi-arch Engine image instead of compiling Rust locally during HA updates; retain persistent best-known names, active-scan/GATT name recovery and per-device connection policy. |
 | **0.3.0b6** | Service-fingerprint discovery for nameless BLE devices; post-connect GATT validation remains mandatory. |
 | **0.3.0b5** | Build repair for 0.3.0b4: valid Cargo SemVer internally (`0.3.0-b5`) while IntiHA/HA report `0.3.0b5`; master-switch behaviour unchanged. |
@@ -73,10 +73,10 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
 
-## Updating to 0.3.0b12
+## Updating to 0.3.0b14
 
 Update **both** the IntiHA HACS integration and **IntiHA Proxy Engine** to
-0.3.0b12. Before the first update from 0.3.0b6, turn **Server enabled** off and
+0.3.0b14. Before the first update from 0.3.0b6, turn **Server enabled** off and
 wait for Connected devices to reach 0; this avoids the old b6 shutdown path
 being held by a live BLE operation. Then update the Engine app and restart Home
 Assistant. **For b10, wait for the GitHub Action `Publish IntiHA app image` to finish successfully before pressing Update in Home Assistant.** Supervisor now pulls that prebuilt image instead of compiling the Rust engine locally. From b7 onward shutdown is bounded so Supervisor updates cannot wait indefinitely. Do not run the native-only 0.3.0b1 app alongside the Proxy Engine.
@@ -400,3 +400,11 @@ See [docs/PUBLISHING.md](docs/PUBLISHING.md) for publishing the source archive.
 IntiHA is BSD-3-Clause licensed. Buttplug is copyright Nonpolynomial Labs LLC
 and contributors and is also BSD-3-Clause licensed. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+### Device grouping (b13)
+
+IntiHA keeps three live, exclusive groups: **Currently connected**, **Known, not connected**, and **Connection disabled** (when **Connect to this device** is switched off). Each device receives a matching Home Assistant label, so you can filter the Devices page by label. The IntiHA hub also exposes a count and `devices` attribute for each group, suitable for dashboards. Home Assistant's built-in integration device-list section heading cannot be customised by an integration, so the native list remains a single list.
+
+### b14 known-device reconnection
+
+When the engine is on and auto-reconnect is enabled, advertisements from previously recognised, connection-enabled devices are prioritised ahead of newly discovered peripherals. This works when a powered-off device starts advertising again or when a device drops and becomes reachable by a different ESPHome proxy. BLE does not roam seamlessly, and no connection is possible while all suitable proxies are unavailable. Existing retry backoffs are not cleared by inventory changes. Device output remains stopped after any reconnection.

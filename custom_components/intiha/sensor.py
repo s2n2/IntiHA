@@ -5,6 +5,7 @@ from homeassistant.const import PERCENTAGE, SIGNAL_STRENGTH_DECIBELS_MILLIWATT
 from homeassistant.helpers.entity import EntityCategory
 
 from .entity import IntiHAEntity, async_add_discovered_entities
+from .device_groups import device_group
 
 PARALLEL_UPDATES = 0
 
@@ -20,6 +21,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             "control_owner",
             "connected_devices",
             "disconnected_devices",
+            "disabled_devices",
             "discovered_devices",
             "active_proxies",
             "last_error",
@@ -102,8 +104,9 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
             "engine_address": coordinator.engine_host,
             "transport": "Home Assistant Bluetooth / ESPHome proxies",
             "control_owner": coordinator.owner,
-            "connected_devices": sum(device.connected for device in coordinator.devices.values()),
-            "disconnected_devices": sum(not device.connected for device in coordinator.devices.values()),
+            "connected_devices": sum(device_group(device) == "connected" for device in coordinator.devices.values()),
+            "disconnected_devices": sum(device_group(device) == "known" for device in coordinator.devices.values()),
+            "disabled_devices": sum(device_group(device) == "disabled" for device in coordinator.devices.values()),
             "discovered_devices": len(coordinator.discovered),
             "active_proxies": coordinator.active_proxy_count,
             "last_error": coordinator.last_error or "None",
@@ -122,8 +125,12 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                 "connection_phase": device.phase,
                 "ble_pairing_required": device.pairing_required,
             }
-        if not self.address and self.key in ("connected_devices", "disconnected_devices"):
-            want_connected = self.key == "connected_devices"
+        if not self.address and self.key in ("connected_devices", "disconnected_devices", "disabled_devices"):
+            group = {
+                "connected_devices": "connected",
+                "disconnected_devices": "known",
+                "disabled_devices": "disabled",
+            }[self.key]
             devices = [
                 {
                     "name": device.name,
@@ -134,7 +141,7 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                 for device in sorted(
                     self.coordinator.devices.values(), key=lambda item: (item.name.casefold(), item.address)
                 )
-                if device.connected is want_connected
+                if device_group(device) == group
             ]
             return {"devices": devices}
         return None

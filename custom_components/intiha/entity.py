@@ -12,6 +12,7 @@ from homeassistant.helpers.entity import Entity
 
 from .const import DOMAIN, VERSION
 from .coordinator import IntiHACoordinator
+from .device_groups import sync_device_group
 
 
 @callback
@@ -76,6 +77,8 @@ class IntiHAEntity(Entity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.async_on_remove(self.coordinator.add_listener(self._async_handle_update))
+        if self.address is not None:
+            sync_device_group(self.coordinator, self.address)
 
     @callback
     def _async_handle_update(self) -> None:
@@ -90,4 +93,5 @@ class IntiHAEntity(Entity):
             if device is not None and device.name != name:
                 # Device metadata does not overwrite a name chosen by the user.
                 registry.async_update_device(device.id, name=name)
+            sync_device_group(self.coordinator, self.address)
         self.async_write_ha_state()

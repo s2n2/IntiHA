@@ -313,6 +313,12 @@ class IntiHACoordinator:
             "blocked_addresses": sorted(
                 address for address, device in self.devices.items() if not device.connect_enabled
             ),
+            # Known, enabled devices take priority over new peripherals in the
+            # engine discovery queue. This does not force a BLE connection when
+            # no proxy can see the device.
+            "known_addresses": sorted(
+                address for address, device in self.devices.items() if device.connect_enabled
+            ),
         }
 
     def _spawn(self, coro, name: str, *, request: bool = False) -> None:
@@ -676,6 +682,7 @@ class IntiHACoordinator:
                 elif not _specific_name(device.name, address):
                     device.name = _fallback_name(address, device.protocols, device.name)
                     self._schedule_name_resolution(address)
+                newly_known = address not in self.discovered
                 self.discovered[address] = {
                     "address": address,
                     "name": raw_name,
@@ -685,6 +692,8 @@ class IntiHACoordinator:
                 if profile_requests_pairing(metadata["name"], metadata["protocols"]):
                     device.pairing_required = True
                 self._save()
+                if newly_known and self.engine_connected:
+                    self._spawn(self._async_sync_known_devices(epoch), "sync known devices")
         elif kind == "request":
             if len(self._request_tasks) >= MAX_BLE_REQUESTS:
                 await self.bridge.send(
@@ -784,6 +793,18 @@ class IntiHACoordinator:
                 values = reading.get("Data", [])
                 if values and isinstance(values[0], int) and 0 <= values[0] <= 100:
                     device.battery = values[0]
+
+    async def _async_sync_known_devices(self, epoch: int) -> None:
+        """Keep engine known-device priority current after official identification.
+
+        Do not reset BLE retry timers merely because metadata changed.
+        """
+        if epoch != self.bridge.epoch or not self.engine_connected or not self.enabled:
+            return
+        try:
+            await self.bridge.request("configure", **self._settings())
+        except BridgeError as err:
+            _LOGGER.debug("Could not update known-device priority: %s", self._safe_error(err))
 
     async def _async_send_cached(self, epoch: int) -> None:
         for advertisement in self.ble.discovered():

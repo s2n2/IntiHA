@@ -175,6 +175,7 @@ pub struct Bridge {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     connecting: Mutex<HashSet<String>>,
     blocked_addresses: Mutex<HashSet<String>>,
+    known_addresses: Mutex<HashSet<String>>,
     comm_sender: Mutex<Option<mpsc::Sender<HardwareCommunicationManagerEvent>>>,
     configuration: Arc<DeviceConfigurationManager>,
     pub manual_timeout: AtomicU64,
@@ -200,6 +201,7 @@ impl Bridge {
             sessions: Mutex::new(HashMap::new()),
             connecting: Mutex::new(HashSet::new()),
             blocked_addresses: Mutex::new(HashSet::new()),
+            known_addresses: Mutex::new(HashSet::new()),
             comm_sender: Mutex::new(None),
             configuration,
             manual_timeout: AtomicU64::new(60),
@@ -375,10 +377,28 @@ impl Bridge {
             }
             *self.blocked_addresses.lock().unwrap() = blocked;
         }
-        for candidate in self.candidates.lock().unwrap().values_mut() {
-            candidate.next_attempt = Instant::now();
-            candidate.attempted = false;
+        if let Some(value) = value.get("known_addresses") {
+            let list = value.as_array().ok_or("known_addresses must be an array")?;
+            if list.len() > 256 {
+                return Err("known_addresses is too large".into());
+            }
+            let mut known = HashSet::new();
+            for item in list {
+                let address = item
+                    .as_str()
+                    .ok_or("known_addresses entries must be strings")?
+                    .trim()
+                    .to_uppercase();
+                if !valid_address(&address) {
+                    return Err("known_addresses contains an invalid Bluetooth address".into());
+                }
+                known.insert(address);
+            }
+            *self.known_addresses.lock().unwrap() = known;
         }
+        // Reconfiguring inventory/connection preferences must not reset
+        // retry cooldowns. A failed proxy can otherwise be hammered whenever
+        // HA updates the known-device list or toggles a switch.
         Ok(())
     }
 
@@ -536,6 +556,7 @@ impl Bridge {
             .collect();
         let connecting = self.connecting.lock().unwrap().clone();
         let now = Instant::now();
+        let known = self.known_addresses.lock().unwrap().clone();
         let due: Vec<_> = {
             let mut candidates = self.candidates.lock().unwrap();
             candidates.retain(|address, candidate| {
@@ -545,9 +566,15 @@ impl Bridge {
                     || connected.contains(address)
                     || now.duration_since(candidate.seen).as_secs() < 180
             });
-            candidates
-                .values_mut()
-                .filter_map(|candidate| {
+            // Give previously identified devices first refusal on scarce
+            // proxy connection slots. Unknown devices can still be identified,
+            // but they cannot displace a reachable known device in this batch.
+            let mut addresses: Vec<_> = candidates.keys().cloned().collect();
+            addresses.sort_by_key(|address| (!known.contains(address), address.clone()));
+            addresses
+                .into_iter()
+                .filter_map(|address| {
+                    let candidate = candidates.get_mut(&address)?;
                     if self.is_blocked(&candidate.advertisement.address)
                         || connected.contains(&candidate.advertisement.address)
                         || connecting.contains(&candidate.advertisement.address)
@@ -902,6 +929,31 @@ mod tests {
 
     fn known_advertisement() -> Value {
         json!({"address":"AA:BB:CC:DD:EE:01","name":"Rave","service_uuids":[],"manufacturer_data":{}})
+    }
+
+    #[tokio::test]
+    async fn known_devices_are_dispatched_before_unknown_candidates() {
+        let bridge = discovery_bridge();
+        let (tx, _rx) = mpsc::channel(4);
+        bridge.attach(tx);
+        let (manager, mut found) = mpsc::channel(8);
+        bridge.install_manager(manager);
+        let known = "AA:BB:CC:DD:EE:09";
+        bridge.configure(&json!({"enabled":true,"known_addresses":[known]})).unwrap();
+        for address in [
+            "AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02",
+            "AA:BB:CC:DD:EE:03", "AA:BB:CC:DD:EE:04", known,
+        ] {
+            bridge.advertisement(json!({"address":address,"name":"LVS-TEST","service_uuids":[],"manufacturer_data":{}})).await;
+        }
+        bridge.discover_due().await;
+        let mut addresses = Vec::new();
+        for _ in 0..4 {
+            if let Ok(HardwareCommunicationManagerEvent::DeviceFound { address, .. }) = found.try_recv() {
+                addresses.push(address);
+            }
+        }
+        assert!(addresses.contains(&known.to_owned()), "known device must not be starved by new discoveries");
     }
 
     #[tokio::test]

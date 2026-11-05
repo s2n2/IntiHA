@@ -1,6 +1,24 @@
+## 0.3.0b14 - known-device reconnection priority
+
+- Keep the engine updated with the set of known, enabled Bluetooth devices.
+- Prioritise reachable known devices over unknown discovery candidates in each connection batch.
+- Continue automatic reconnection on newly observed advertisements, including when devices move between proxies or are switched back on (requires an available connection slot and automatic reconnection enabled).
+- Stop configuration updates from resetting failure cooldowns, which could otherwise cause repeated failed connection attempts.
+- Keep the per-device Connect to this device switch authoritative; disabled devices remain blocked.
+- Preserve stop verification and zero-output-on-reconnect behaviour; never replay a previous output.
+- No forced active scans during background reconnection; the manual Search button remains available for new-device discovery.
+
+**Validation:** Python syntax and repository metadata checks are possible offline. A full Rust/Docker build and live ESPHome proxy validation are required before release to production.
+
+## 0.3.0b14 - device connection grouping
+
+- Automatically assign each known device exactly one IntiHA label: **Currently connected**, **Known, not connected**, or **Connection disabled**. Labels update whenever the device connects, disconnects, or its Connect to this device switch changes. Existing custom device names, identifiers, and unrelated labels are preserved.
+- Add a **Connection disabled** count/list sensor. Make the existing **Known but not connected** sensor exclude disabled devices so the three categories are mutually exclusive.
+- NOTE: Home Assistant controls the heading and presentation of the integration's native device list; an integration cannot split that particular list into custom sections. Use the three labels as device filters, or the three sensors to build dashboard sections.
+
 # Changelog
 
-## 0.3.0b12
+## 0.3.0b14
 
 - Avoid repeated BLE connection attempts when a Home Assistant proxy has no available connection path. The HA bridge now applies a per-device 60-second cool-down for unavailable proxies and 45 seconds after connection timeouts, with less aggressive handling of other failures.
 - Identify each device's most recent failure as waiting for proxy, waiting for advertisement, connection timed out or retrying in its Home Assistant status sensor.
