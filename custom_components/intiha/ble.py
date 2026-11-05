@@ -15,6 +15,8 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
+
+from .retry_policy import classify_ble_failure
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -115,6 +117,9 @@ class BleBridge:
         self._event_worker: asyncio.Task[None] | None = None
         self._used_ids: set[tuple[str, str]] = set()
         self._used_order: deque[tuple[str, str]] = deque()
+        # No connection is attempted while a previous proxy failure cools down.
+        # This prevents repeated GATT timeouts occupying limited proxy slots.
+        self._retry_not_before: dict[str, float] = {}
 
     @property
     def connected_addresses(self) -> frozenset[str]:
@@ -465,8 +470,15 @@ class BleBridge:
             raise BleBridgeError("A retired connection_id cannot be reused")
         if len(self._connections) + len(self._connecting) >= MAX_CONNECTIONS:
             raise BleBridgeError("Maximum active BLE connections reached")
+        now = self._hass.loop.time()
+        remaining = self._retry_not_before.get(address, 0.0) - now
+        if remaining > 0:
+            raise BleBridgeError(
+                f"Waiting for Bluetooth recovery ({remaining:.0f}s remaining)"
+            )
         device = bluetooth.async_ble_device_from_address(self._hass, address, connectable=True)
         if device is None:
+            self._retry_not_before[address] = now + 60.0
             raise BleBridgeError("No connectable Bluetooth adapter can currently reach this device")
         self._used_ids.add(key)
         self._used_order.append(key)
@@ -559,6 +571,9 @@ class BleBridge:
             self._connections[address] = connection
         except BaseException as err:
             self._learn_security_requirement(address, err)
+            if not isinstance(err, asyncio.CancelledError):
+                _, delay = classify_ble_failure(str(err))
+                self._retry_not_before[address] = self._hass.loop.time() + delay
             for pending in created:
                 await self._disconnect_client(pending)
             if isinstance(err, asyncio.CancelledError):
@@ -570,6 +585,7 @@ class BleBridge:
             raise
         finally:
             self._connecting.discard(address)
+        self._retry_not_before.pop(address, None)
         await self._emit_safely(
             {"type": "connected", "address": address, "connection_id": connection_id}
         )

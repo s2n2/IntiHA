@@ -68,6 +68,9 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                     "initialising",
                     "verifying_stop",
                     "retrying",
+                    "waiting_for_proxy",
+                    "waiting_for_advertisement",
+                    "connection_timed_out",
                     "connected",
                 ],
                 "control_owner": ["none", "home_assistant", "external_client"],
@@ -85,7 +88,7 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                     else "connected"
                     if device.connected
                     else device.phase
-                    if device.phase in ("connecting", "initialising", "verifying_stop", "retrying")
+                    if device.phase in ("connecting", "initialising", "verifying_stop", "retrying", "waiting_for_proxy", "waiting_for_advertisement", "connection_timed_out")
                     else "offline"
                 )
             return {

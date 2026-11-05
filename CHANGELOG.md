@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0b12
+
+- Avoid repeated BLE connection attempts when a Home Assistant proxy has no available connection path. The HA bridge now applies a per-device 60-second cool-down for unavailable proxies and 45 seconds after connection timeouts, with less aggressive handling of other failures.
+- Identify each device's most recent failure as waiting for proxy, waiting for advertisement, connection timed out or retrying in its Home Assistant status sensor.
+- Preserve b11 engine and safety-related command handling, manual connection switches, device names and connected/disconnected summaries. No automatic replay of actuator commands.
+- Keep Supervisor local Docker builds. Do not try to pull unpublished images from GHCR.
+- Note: install-progress UI and Supervisor orchestration cannot be controlled by the integration; a successful image build can still appear stuck until Supervisor/Core have completed their own state transitions.
+
 ## 0.3.0b11
 
 - Build-recovery release: revert the unverified Rust stop-barrier changes introduced in b10 and restore the b8 engine command implementation.

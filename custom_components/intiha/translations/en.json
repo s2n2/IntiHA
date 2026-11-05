@@ -124,7 +124,10 @@
           "connecting": "Connecting",
           "initialising": "Initialising",
           "verifying_stop": "Checking stop command",
-          "retrying": "Retrying"
+          "retrying": "Retrying",
+          "waiting_for_proxy": "Waiting for Bluetooth proxy",
+          "waiting_for_advertisement": "Waiting for device advertisement",
+          "connection_timed_out": "Bluetooth connection timed out"
         }
       },
       "engine_address": {

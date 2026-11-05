@@ -36,6 +36,7 @@ from .const import (
     MAX_KNOWN_DEVICES,
 )
 from .security import profile_requests_pairing
+from .retry_policy import classify_ble_failure
 
 _LOGGER = logging.getLogger(__name__)
 _MAC = re.compile(r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$")
@@ -823,7 +824,7 @@ class IntiHACoordinator:
             if address in self.devices:
                 self.devices[address].error = self._safe_error(err)
                 if message.get("op") in ("connect", "prepare_stop"):
-                    self.devices[address].phase = "retrying"
+                    self.devices[address].phase = classify_ble_failure(self.devices[address].error)[0]
                     self.last_error = self.devices[address].error
             _LOGGER.debug(
                 "IntiHA BLE operation %s failed: %s", message.get("op"), self._safe_error(err)
