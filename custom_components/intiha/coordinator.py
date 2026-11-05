@@ -123,6 +123,7 @@ class DeviceState:
     phase: str = "offline"
     pairing_required: bool = False
     advertised_name: str = ""
+    learned_name: str = ""
     protocols: list[str] = field(default_factory=list)
     connect_enabled: bool = True
 
@@ -166,6 +167,7 @@ class IntiHACoordinator:
         self._last_advertisement: dict[str, float] = {}
         self._scan_until = 0.0
         self._active_scan_lock = asyncio.Lock()
+        self._name_resolution_last: dict[str, float] = {}
         self._store = Store[dict[str, Any]](hass, 1, f"{DOMAIN}.{entry.entry_id}")
         self._cancel_timer: Callable[[], None] | None = None
         self.ble = BleBridge(
@@ -217,6 +219,45 @@ class IntiHACoordinator:
         for listener in tuple(self._listeners):
             listener()
 
+    def _remember_specific_name(
+        self, device: DeviceState, candidate: object, *, advertised: bool = False
+    ) -> bool:
+        """Persist a useful identity and never replace it with a generic label."""
+        specific = _specific_name(candidate, device.address)
+        if not specific:
+            return False
+        changed = device.learned_name != specific or device.name != specific
+        device.learned_name = specific
+        device.name = specific
+        if advertised:
+            device.advertised_name = specific
+        if profile_requests_pairing(specific, device.protocols):
+            device.pairing_required = True
+        return changed
+
+    def _schedule_name_resolution(self, address: str) -> None:
+        """Request a bounded address-targeted active scan for a generic name."""
+        if not self.enabled or self._shutdown or not _MAC.fullmatch(address):
+            return
+        now = self.hass.loop.time()
+        if now - self._name_resolution_last.get(address, -1000) < 300:
+            return
+        self._name_resolution_last[address] = now
+        self._spawn(self._async_resolve_device_name(address), f"resolve name {address}")
+
+    async def _async_resolve_device_name(self, address: str) -> None:
+        try:
+            resolved = await self.ble.async_resolve_name(address, timeout=8.0)
+        except Exception:
+            _LOGGER.debug("Name resolution failed for %s", address, exc_info=True)
+            return
+        device = self.devices.get(address)
+        if device is None or not resolved:
+            return
+        if self._remember_specific_name(device, resolved, advertised=True):
+            self._save()
+            self._notify()
+
     def _device_connect_allowed(self, address: str) -> bool:
         """Allow GATT only for a supported device whose per-device switch is on."""
         device = self.devices.get(address.upper())
@@ -245,6 +286,7 @@ class IntiHACoordinator:
                 address: {
                     "name": device.name,
                     "advertised_name": device.advertised_name,
+                    "learned_name": device.learned_name,
                     "protocols": device.protocols,
                     "messages": device.messages,
                     "pairing_required": device.pairing_required,
@@ -290,6 +332,11 @@ class IntiHACoordinator:
             device = self._register_device(address, metadata.get("name", "Device"))
             if device is not None:
                 device.advertised_name = _clean_name(metadata.get("advertised_name", ""))
+                stored_learned = _specific_name(metadata.get("learned_name", ""), address)
+                stored_name = _specific_name(metadata.get("name", ""), address)
+                device.learned_name = stored_learned or stored_name or ""
+                if device.learned_name:
+                    device.name = device.learned_name
                 raw_protocols = metadata.get("protocols", [])
                 device.protocols = [str(value)[:80] for value in raw_protocols if isinstance(value, str)][:16]
                 device.messages = metadata.get("messages", {})
@@ -621,13 +668,13 @@ class IntiHACoordinator:
             protocols = [str(value)[:80] for value in raw_protocols if isinstance(value, str)][:16]
             device = self._register_device(address, raw_name or "Device")
             if device is not None:
-                specific = _specific_name(raw_name, address)
-                if specific:
-                    device.advertised_name = specific
-                    device.name = specific
                 device.protocols = protocols or device.protocols
-                if not _specific_name(device.name, address):
+                self._remember_specific_name(device, raw_name, advertised=True)
+                if device.learned_name:
+                    device.name = device.learned_name
+                elif not _specific_name(device.name, address):
                     device.name = _fallback_name(address, device.protocols, device.name)
+                    self._schedule_name_resolution(address)
                 self.discovered[address] = {
                     "address": address,
                     "name": raw_name,
@@ -696,21 +743,20 @@ class IntiHACoordinator:
                     self._uncertain_addresses.discard(address)
                     self.stop_uncertain = bool(self._uncertain_addresses)
             engine_name = description.get("DeviceName", device.name)
-            advertised = _specific_name(device.advertised_name, address)
             engine_specific = _specific_name(engine_name, address)
-            current_specific = _specific_name(device.name, address)
             if engine_specific:
-                # A genuinely model-specific Buttplug name is better than an
-                # advertisement alias such as a short product code.
-                device.name = engine_specific
-            elif advertised:
-                device.name = advertised
-            elif current_specific:
-                # Preserve a previously learned specific name; never downgrade
-                # it to a generic Buttplug protocol label on inventory refresh.
-                device.name = current_specific
+                self._remember_specific_name(device, engine_specific)
+            if device.learned_name:
+                # Best-known identity is independent of the current advertisement
+                # and survives generic Buttplug inventory refreshes/restarts.
+                device.name = device.learned_name
             else:
-                device.name = _fallback_name(address, device.protocols, engine_name)
+                advertised = _specific_name(device.advertised_name, address)
+                if advertised:
+                    self._remember_specific_name(device, advertised, advertised=True)
+                else:
+                    device.name = _fallback_name(address, device.protocols, engine_name)
+                    self._schedule_name_resolution(address)
             device.index = index
             device.connection_id = connection_id
             device.connected = description.get("ready") is True
@@ -795,6 +841,10 @@ class IntiHACoordinator:
                 device.rssi = message.get("rssi")
                 device.source = message.get("source")
                 device.last_seen = dt_util.utcnow()
+                if self._remember_specific_name(device, message.get("name", ""), advertised=True):
+                    self._save()
+                elif not device.learned_name:
+                    self._schedule_name_resolution(address)
                 self._notify()
             now = self.hass.loop.time()
             if not self.enabled or self._shutdown:
@@ -809,6 +859,14 @@ class IntiHACoordinator:
                 oldest = min(self._last_advertisement, key=self._last_advertisement.get)
                 self._last_advertisement.pop(oldest)
             self._last_advertisement[address] = now
+        elif kind == "identity":
+            device = self.devices.get(address)
+            if device is not None and self._remember_specific_name(
+                device, message.get("name", ""), advertised=True
+            ):
+                self._save()
+                self._notify()
+            return
         elif kind == "disconnected":
             if address in self.devices:
                 device = self.devices[address]

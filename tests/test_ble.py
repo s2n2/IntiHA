@@ -191,6 +191,30 @@ async def test_current_ha_advertisement_shape_and_connectable_semantics(radio, m
     assert snapshot[0] in radio.events
 
 
+async def test_advertisement_prefers_scan_response_local_name_over_address(radio, monkeypatch):
+    info = BluetoothServiceInfoBleak(
+        name=ADDRESS,
+        address=ADDRESS,
+        rssi=-50,
+        manufacturer_data={},
+        service_data={},
+        service_uuids=[],
+        source="proxy-a",
+        device=BLEDevice(ADDRESS, ADDRESS, {}),
+        advertisement=SimpleNamespace(local_name="Bond"),
+        connectable=True,
+        time=100.0,
+        tx_power=None,
+    )
+    assert radio.bridge._advertisement_dict(info)["name"] == "Bond"
+
+
+async def test_connect_emits_specific_ble_identity_before_connected(radio):
+    radio.lookup.return_value = BLEDevice(ADDRESS, "Bond", {"source": "proxy-a"})
+    await radio.request("connect")
+    assert {"type": "identity", "address": ADDRESS, "name": "Bond"} in radio.events
+
+
 async def test_connect_services_read_write_and_new_adapter_lookup(radio):
     result = await radio.request("connect")
     assert result["services"][0]["characteristics"][0]["handle"] == 12

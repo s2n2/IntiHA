@@ -36,6 +36,8 @@ def state_subject():
         if isinstance(node, ast.ClassDef) and node.name == "IntiHACoordinator"
     )
     selected = {
+        "_remember_specific_name",
+        "_schedule_name_resolution",
         "_requires_pairing",
         "_require_pairing",
         "_persisted_state",
@@ -82,10 +84,15 @@ def state_subject():
     subject.devices = {}
     subject.discovered = {}
     subject.enabled = True
+    subject._shutdown = False
     subject.stop_uncertain = False
     subject._uncertain_addresses = set()
     subject.bridge = SimpleNamespace(epoch=7)
-    subject.ble = SimpleNamespace(async_start=AsyncMock())
+    subject.ble = SimpleNamespace(async_start=AsyncMock(), async_resolve_name=AsyncMock(return_value=None))
+    subject.hass = SimpleNamespace(loop=SimpleNamespace(time=lambda: 1000.0))
+    subject._name_resolution_last = {}
+    subject._async_resolve_device_name = AsyncMock()
+    subject._spawn = lambda coro, _name: coro.close()
     subject._store = SimpleNamespace(async_load=AsyncMock(return_value=None))
     subject._save = Mock()
     subject._notify = Mock()
@@ -103,6 +110,7 @@ async def test_identified_bond_sets_policy_and_persists_it(state_subject):
     assert set(saved["devices"][ADDRESS]) == {
         "name",
         "advertised_name",
+        "learned_name",
         "protocols",
         "messages",
         "pairing_required",
@@ -161,6 +169,27 @@ async def test_specific_advertised_name_is_not_downgraded_by_generic_buttplug_na
             "DeviceMessages": {},
         }]
     )
+    assert state_subject.devices[ADDRESS].name == "Bond"
+
+
+async def test_best_known_name_round_trips_and_survives_generic_refresh(state_subject):
+    await state_subject._async_engine_message(
+        {"type": "discovered", "address": ADDRESS, "name": "Bond", "protocols": ["wevibe-8bit"]},
+        7,
+    )
+    saved = state_subject._persisted_state()
+    state_subject.devices = {}
+    state_subject._store.async_load.return_value = saved
+    await state_subject.async_initialize()
+    assert state_subject.devices[ADDRESS].learned_name == "Bond"
+    state_subject._update_devices([{
+        "address": ADDRESS,
+        "connection_id": "connection-b",
+        "ready": True,
+        "DeviceIndex": 2,
+        "DeviceName": "WeVibe 8-bit Device",
+        "DeviceMessages": {},
+    }])
     assert state_subject.devices[ADDRESS].name == "Bond"
 
 

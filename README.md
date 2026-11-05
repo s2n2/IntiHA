@@ -1,6 +1,6 @@
 # IntiHA
 
-> **0.3.0b7 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
+> **0.3.0b8 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
 
 
 **A plug-and-play Buttplug server using Home Assistant's Bluetooth coverage.**
@@ -16,9 +16,9 @@ Assistant owns BLE scanning, adapter selection and GATT through its connectable
 adapters and ESPHome proxies. The Rust engine owns Buttplug protocol matching,
 device drivers and the external Buttplug server.
 
-**Version 0.3.0b7 - device identity and connection-policy beta.**
+**Version 0.3.0b8 - device identity and connection-policy beta.**
 
-0.3.0b7 keeps the broad/service-fingerprint discovery from 0.3.0b6, while restoring useful device identity in Home Assistant. Specific advertised or model names are retained instead of being replaced by generic Buttplug labels; nameless devices get a stable protocol/address-suffix label. Each discovered device also gets a persistent **Connect to this device** switch, on by default, so nearby supported devices can remain visible without IntiHA repeatedly trying to connect to them.
+0.3.0b8 keeps the broad/service-fingerprint discovery from 0.3.0b6 and makes device identity persistent. IntiHA now remembers the best specific name it has learned for each Bluetooth address, actively asks Home Assistant for scan-response names when a supported device is otherwise generic, and can recover the standard BLE Device Name after connection. A later generic Buttplug label can no longer downgrade a learned name such as **Bond**. Each discovered device retains the persistent **Connect to this device** switch introduced in b7.
 
 The Home Assistant **Server enabled** switch gates the complete user-facing
 Intiface service. When it is off, IntiHA stops outputs, discovery and BLE
@@ -53,7 +53,7 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
-| **0.3.0b7** | Preserve specific device names, add stable fallback names and a per-device Connect switch, and bound shutdown/update cleanup. |
+| **0.3.0b8** | Persist best-known device identity; recover names from active scan responses and connected BLE Device Name; retain b7 connection-policy/update fixes. |
 | **0.3.0b6** | Service-fingerprint discovery for nameless BLE devices; post-connect GATT validation remains mandatory. |
 | **0.3.0b5** | Build repair for 0.3.0b4: valid Cargo SemVer internally (`0.3.0-b5`) while IntiHA/HA report `0.3.0b5`; master-switch behaviour unchanged. |
 | **0.3.0b4** | Master-switch build: Off rejects external clients and tears down BLE/discovery while retaining only the HA control bridge. Superseded because its Cargo package version was invalid. |
@@ -70,10 +70,10 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
 
-## Updating to 0.3.0b7
+## Updating to 0.3.0b8
 
 Update **both** the IntiHA HACS integration and **IntiHA Proxy Engine** to
-0.3.0b7. Before the first update from 0.3.0b6, turn **Server enabled** off and
+0.3.0b8. Before the first update from 0.3.0b6, turn **Server enabled** off and
 wait for Connected devices to reach 0; this avoids the old b6 shutdown path
 being held by a live BLE operation. Then update the Engine app and restart Home
 Assistant. From b7 onward shutdown is bounded so Supervisor updates cannot wait

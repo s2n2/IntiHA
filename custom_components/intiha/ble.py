@@ -38,6 +38,7 @@ MAX_STOP_WRITES = 16
 MAX_CONNECTIONS = 32
 MAX_EVENTS = 256
 MAX_RETIRED_IDS = 4096
+DEVICE_NAME_CHARACTERISTIC = "00002a00-0000-1000-8000-00805f9b34fb"
 _ADDRESS = re.compile(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\Z")
 _OPS = frozenset(
     {
@@ -123,6 +124,51 @@ class BleBridge:
             for address, connection in self._connections.items()
             if connection.client.is_connected
         )
+
+    @staticmethod
+    def _useful_name(info: Any) -> str | None:
+        """Prefer the advertisement local name over an address-like BLEDevice name."""
+        address = str(getattr(info, "address", "")).upper()
+        advertisement = getattr(info, "advertisement", None)
+        device = getattr(info, "device", None)
+        candidates = (
+            getattr(advertisement, "local_name", None),
+            getattr(info, "name", None),
+            getattr(device, "name", None),
+        )
+        for value in candidates:
+            if not isinstance(value, str):
+                continue
+            name = " ".join(value.strip().split())[:100]
+            if not name:
+                continue
+            upper = name.upper().replace("-", ":")
+            if upper == address or _ADDRESS.fullmatch(upper):
+                continue
+            return name
+        return None
+
+    async def async_resolve_name(self, address: str, *, timeout: float = 8.0) -> str | None:
+        """Ask HA for an address-targeted active scan to recover scan-response names."""
+        address = self._validate_address(address)
+        cached = bluetooth.async_last_service_info(self._hass, address, connectable=False)
+        if cached is not None and (name := self._useful_name(cached)):
+            return name
+
+        def resolved(info: bluetooth.BluetoothServiceInfoBleak) -> bool:
+            return self._useful_name(info) is not None
+
+        try:
+            info = await bluetooth.async_process_advertisements(
+                self._hass,
+                resolved,
+                {"address": address, "connectable": False},
+                bluetooth.BluetoothScanningMode.ACTIVE,
+                int(max(1, min(timeout, 15))),
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            return None
+        return self._useful_name(info)
 
     async def async_start(self) -> None:
         """Register with the shared HA scanner; never start a second scanner."""
@@ -504,6 +550,11 @@ class BleBridge:
             connection = _Connection(
                 address, connection_id, client, pairing_requested=pairing_required
             )
+            resolved_name = await self._connected_device_name(connection, device)
+            if resolved_name:
+                await self._emit_safely(
+                    {"type": "identity", "address": address, "name": resolved_name}
+                )
             result = self._services(connection)
             self._connections[address] = connection
         except BaseException as err:
@@ -523,6 +574,35 @@ class BleBridge:
             {"type": "connected", "address": address, "connection_id": connection_id}
         )
         return result
+
+    async def _connected_device_name(self, connection: _Connection, device: Any) -> str | None:
+        """Recover a model/local name after GATT connect without making it mandatory."""
+        pseudo = type("_Identity", (), {
+            "address": connection.address,
+            "name": getattr(device, "name", None),
+            "device": device,
+            "advertisement": None,
+        })()
+        if name := self._useful_name(pseudo):
+            return name
+        characteristic = connection.client.services.get_characteristic(DEVICE_NAME_CHARACTERISTIC)
+        if characteristic is None or "read" not in getattr(characteristic, "properties", []):
+            return None
+        try:
+            async with asyncio.timeout(2.0):
+                raw = bytes(await connection.client.read_gatt_char(characteristic))
+        except Exception:
+            return None
+        try:
+            name = raw.decode("utf-8", errors="strict").rstrip("\x00").strip()
+        except UnicodeDecodeError:
+            return None
+        if not name or len(name) > 100:
+            return None
+        upper = name.upper().replace("-", ":")
+        if upper == connection.address or _ADDRESS.fullmatch(upper):
+            return None
+        return " ".join(name.split())
 
     def _learn_security_requirement(self, address: str, error: BaseException) -> None:
         """Remember explicit ATT denial; never replay a failed movement write.
@@ -725,12 +805,12 @@ class BleBridge:
         with suppress(asyncio.QueueFull):
             self._events.put_nowait(self._advertisement_dict(info))
 
-    @staticmethod
-    def _advertisement_dict(info: bluetooth.BluetoothServiceInfoBleak) -> dict[str, Any]:
+    @classmethod
+    def _advertisement_dict(cls, info: bluetooth.BluetoothServiceInfoBleak) -> dict[str, Any]:
         return {
             "type": "advertisement",
             "address": info.address.upper(),
-            "name": info.name or "",
+            "name": cls._useful_name(info) or info.name or "",
             "rssi": info.rssi,
             "source": info.source,
             "connectable": info.connectable,

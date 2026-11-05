@@ -1,17 +1,15 @@
 # Changelog
 
-## 0.3.0b7
+## 0.3.0b8
 
-Device identity, per-device connection policy and update reliability.
+Persistent device identity recovery and naming repair.
 
-- Preserve a useful advertised or previously learned device/model name when Buttplug later reports a generic protocol label such as `WeVibe Device` or `WeVibe 8-bit Device`.
-- Prefer a genuinely model-specific Buttplug name when one is available. Nameless/generic devices receive a stable protocol plus Bluetooth-address suffix, for example `We-Vibe · 2F:2B`, so multiple devices are distinguishable in Home Assistant.
-- Register each IntiHA device with its Bluetooth address in the Home Assistant device registry while preserving any user-selected HA device name. MAC/OUI data is not treated as a reliable model lookup.
-- Add a per-device **Connect to this device** switch. It defaults on, persists across restarts/updates, and when off leaves the device visible while preventing automatic connection/retry attempts. Disabling an already connected device performs the normal safe disconnect.
-- Enforce the same per-device deny list in both the Home Assistant BLE bridge and the Rust discovery scheduler, so an unwanted/neighbour device is skipped before another GATT attempt is created.
-- Fix a nested `_state_lock` in `Stop all` that could deadlock the Home Assistant control path.
-- Bound Rust shutdown, the container entrypoint wait, and BLE/admin cleanup so Supervisor app updates cannot wait indefinitely on a stuck connection operation.
-- Retain 0.3.0b6's service-fingerprint discovery for identity-poor BLE devices.
+- Keep a separate persistent **best-known device name** by Bluetooth address. Once a useful identity such as `Bond` is learned it survives restarts, app updates and later generic Buttplug inventory names.
+- Prefer Home Assistant/Bleak scan-response `local_name` over an address-like BLE device name.
+- When a supported device is otherwise nameless/generic, request a bounded address-targeted active scan so devices that reveal their name only in a scan response can be identified.
+- After GATT connect, opportunistically recover the standard BLE Device Name characteristic when available and feed that identity back into Home Assistant. Failure to read the optional name never blocks control.
+- Never downgrade a learned specific identity to generic labels such as `WeVibe Device` or `WeVibe 8-bit Device`; generic devices still receive a stable protocol/address suffix until a better name is learned.
+- Retain b7's persistent **Connect to this device** switch, engine-side deny list, Bluetooth registry connection metadata, and bounded shutdown/update cleanup.
 
 ## 0.3.0b6
 
