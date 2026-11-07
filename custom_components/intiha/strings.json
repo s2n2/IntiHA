@@ -185,6 +185,18 @@
       },
       "feedback_status": {
         "name": "Device feedback status"
+      },
+      "command_diagnostic": {
+        "name": "Command telemetry status",
+        "state": {
+          "server_disabled": "HA Server is off",
+          "engine_disconnected": "IntiHA engine disconnected",
+          "device_disabled": "Device connection disabled",
+          "bluetooth_disconnected": "Device not connected to IntiHA",
+          "awaiting_external_commands": "Connected; waiting for Ogg output",
+          "receiving_external_commands": "Receiving external output",
+          "manual_control_ready": "Connected; Home Assistant control"
+        }
       }
     }
   },

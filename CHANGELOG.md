@@ -1,10 +1,10 @@
-## 0.3.0b21 – Verified classic BLE feedback and clear diagnostics (HACS-only)
+## 0.3.0b22 - Commanded intensity recovery (HACS-only)
 
-- Validate the documented classic We-Vibe GATT readback endpoint (both vendor control and information characteristics) before enabling device-reported values. Other protocols remain unsupported unless an actual verified device read exists.
-- Distinguish unsupported profiles, unreadable characteristics, malformed reports and real proxy timeouts. No command-derived values are labelled as device feedback.
-- Keep bounded, low-priority readback attempts with ten-second backoff after repeated failure; do not affect STOP verification, motor commands or public Buttplug/WebSocket messages.
-- Show readback profile, probe counts and a safe error explanation in the per-device Feedback status sensor and in redacted integration diagnostics.
-- This release only changes Home Assistant Python integration code. The existing working 0.3.0b20 Proxy Engine is retained without rebuilding it.
+- Restore the known-working v0.3.0b20 BLE feedback and commanded-output implementation, rolling back experimental b21 compatibility changes.
+- Add per-device **Command telemetry status** diagnostic. It explains why the commanded-intensity sensor is unavailable, including BLE disconnection or Ogg using another server.
+- Keep intensity values unavailable when IntiHA cannot confirm the device is connected; never fabricate a zero or hardware-reading value.
+- Keep vibration sliders intentionally disabled while an external controller owns output. This does not disable the separate commanded-intensity sensor when this IntiHA connection is ready.
+- Does not change the working b20 Rust engine, Buttplug messages, stop barriers or Ogg pulse backups.
 
 ## v0.3.0b20 — Feedback diagnostics and resilient reads
 

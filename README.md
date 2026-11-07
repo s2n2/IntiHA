@@ -452,10 +452,16 @@ For classic We-Vibe devices exposing the documented `f000b000-0451-4000-b000-000
 Use the per-device **Device feedback status** diagnostic alongside **Device-reported intensity**. `unsupported` means the device does not expose the documented classic We-Vibe readable status characteristic; it cannot provide physical feedback through this protocol. `read_timeout`, `read_error`, and `invalid_frame` indicate a detectable characteristic whose readings are failing. These are optional reads and do not affect the verified STOP gate or motor control. The intensity sensor remains unavailable when readings are not valid.
 
 
-### v0.3.0b21 device feedback compatibility
+### v0.3.0b22 commanded intensity recovery
 
-The sensor **Device-reported intensity** is a genuine BLE status read, **not** a replay of Ogg commands. It is available only when the connected device exposes both documented classic We-Vibe characteristic UUIDs, and valid 8-byte information frames can be read. The read can fail or take longer through ESPHome proxies; such failures do not affect motor control. **Bond, Sync 2 and other newer We-Vibe variants may have no verified readable intensity protocol.** In that case IntiHA explicitly marks feedback `unsupported` and leaves the reading unavailable; an unverified value is never substituted.
+This HACS-only release restores the b20 integration path for commanded-output telemetry.
+It adds a per-device **Command telemetry status** sensor. If Bond's **Commanded intensity** reads `Unavailable`, check this diagnostic:
 
-For troubleshooting, use **Device feedback status** on the device page. Its attributes now show `readback_profile`, `reads_attempted`, `consecutive_read_failures`, and `detail`. The **Download diagnostics** export includes the same status, but contains no Bluetooth addresses, names, command histories or raw GATT frames. `unsupported` means no verified device feedback route is present; `read_timeout` indicates a response did not arrive within the short safety-conscious polling window, while `invalid_frame` means the read returned an unrecognised status format.
+- **Device not connected to IntiHA**: the engine has not established a verified ready BLE link. The **Connect to this device** switch allows attempts but does not prove a connection. If Ogg is connected to a different Intiface server, IntiHA cannot observe that device.
+- **Connected; waiting for Ogg output**: the BLE link is ready, but this IntiHA engine has not received a command yet.
+- **Receiving external output**: Ogg has supplied commands to this engine. The separate **Commanded intensity** sensor should be available.
+- **Connected; Home Assistant control**: engine owns controls and manual sliders may be enabled.
 
-**Install:** Update the IntiHA integration through HACS and reload it. The Proxy Engine remains at v0.3.0b20. Do not rebuild or uninstall the working engine just to add feedback diagnostics.
+When Ogg owns the device, IntiHA's manual vibration sliders remain intentionally disabled to prevent conflicting control commands. The **Device-reported intensity** sensor is a separate, optional classic-BLE feedback mechanism; not all models (including Bond) provide a verified readback characteristic.
+
+Install via HACS and restart/reload the IntiHA integration; **keep the current working b20 Proxy Engine**. This release does not change the engine's Rust or Docker code.
