@@ -176,6 +176,7 @@ pub struct Bridge {
     connecting: Mutex<HashSet<String>>,
     blocked_addresses: Mutex<HashSet<String>>,
     known_addresses: Mutex<HashSet<String>>,
+    pub known_names: Mutex<HashMap<String, String>>,
     comm_sender: Mutex<Option<mpsc::Sender<HardwareCommunicationManagerEvent>>>,
     configuration: Arc<DeviceConfigurationManager>,
     pub manual_timeout: AtomicU64,
@@ -202,6 +203,7 @@ impl Bridge {
             connecting: Mutex::new(HashSet::new()),
             blocked_addresses: Mutex::new(HashSet::new()),
             known_addresses: Mutex::new(HashSet::new()),
+            known_names: Mutex::new(HashMap::new()),
             comm_sender: Mutex::new(None),
             configuration,
             manual_timeout: AtomicU64::new(60),
@@ -395,6 +397,22 @@ impl Bridge {
                 known.insert(address);
             }
             *self.known_addresses.lock().unwrap() = known;
+        }
+        if let Some(value) = value.get("known_names") {
+            let names = value.as_object().ok_or("known_names must be a map")?;
+            if names.len() > 256 {
+                return Err("known_names is too large".into());
+            }
+            let mut accepted = HashMap::new();
+            for (raw_address, name) in names {
+                let address = raw_address.to_uppercase();
+                let label = name.as_str().ok_or("known_names entries must be strings")?.trim();
+                if !valid_address(&address) || label.is_empty() || label.len() > 100 {
+                    return Err("known_names contains an invalid address or label".into());
+                }
+                accepted.insert(address, label.to_owned());
+            }
+            *self.known_names.lock().unwrap() = accepted;
         }
         // Reconfiguring inventory/connection preferences must not reset
         // retry cooldowns. A failed proxy can otherwise be hammered whenever
@@ -684,10 +702,12 @@ impl Bridge {
         if let Some(session) = session {
             session.connected.store(false, Ordering::SeqCst);
             let was_ready = session.ready.swap(false, Ordering::SeqCst);
-            if was_ready && self.external_active.load(Ordering::SeqCst) {
-                // The public protocol has only reusable device indexes. Close
-                // its owner when a ready session disappears, so buffered old
-                // commands cannot reach a new connection under the same index.
+            if was_ready {
+                // Revoke all pre-disconnect control generations. A pulse's
+                // scheduled stop may never have reached the physical device;
+                // commands from the old session must never resume on a new one.
+                // The new BLE session stays unready until prepare_safe_stop
+                // successfully writes and verifies a fresh physical stop.
                 self.control_epoch.fetch_add(1, Ordering::SeqCst);
             }
             let _ = session
@@ -894,6 +914,19 @@ mod tests {
             &json!({"type":"disconnected","address":"AA:BB:CC:DD:EE:FF","connection_id":"old"}),
         );
         assert!(bridge.session("new").is_some());
+    }
+
+    #[test]
+    fn ready_session_loss_revokes_manual_control_generation() {
+        let bridge = Bridge::new(Arc::new(DeviceConfigurationManager::default()));
+        let session = Arc::new(Session::new("AA:BB:CC:DD:EE:FF", "manual", false));
+        session.ready.store(true, Ordering::SeqCst);
+        bridge.register(session);
+        let before = bridge.control_epoch.load(Ordering::SeqCst);
+        bridge.invalidate("manual");
+        assert_eq!(bridge.control_epoch.load(Ordering::SeqCst), before + 1);
+        bridge.invalidate("manual");
+        assert_eq!(bridge.control_epoch.load(Ordering::SeqCst), before + 1);
     }
 
     #[test]

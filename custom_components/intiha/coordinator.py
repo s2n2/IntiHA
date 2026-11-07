@@ -65,6 +65,8 @@ def _specific_name(value: object, address: str) -> str | None:
     lowered = name.casefold().replace("-", "")
     if lowered in {
         "device",
+        "wevibe",
+        "wevibe 8bit",
         "wevibe device",
         "wevibe 8bit device",
         "intiha device",
@@ -234,6 +236,8 @@ class IntiHACoordinator:
             device.advertised_name = specific
         if profile_requests_pairing(specific, device.protocols):
             device.pairing_required = True
+        if changed and self.engine_connected and not self._shutdown:
+            self._spawn(self._async_sync_known_devices(self.bridge.epoch), "sync model name")
         return changed
 
     def _schedule_name_resolution(self, address: str) -> None:
@@ -319,6 +323,13 @@ class IntiHACoordinator:
             "known_addresses": sorted(
                 address for address, device in self.devices.items() if device.connect_enabled
             ),
+            # The public Buttplug v3 API has no MAC field. Our engine enriches
+            # outbound device messages with a MAC and these model-specific labels.
+            "known_names": {
+                address: device.learned_name
+                for address, device in self.devices.items()
+                if _specific_name(device.learned_name, address)
+            },
         }
 
     def _spawn(self, coro, name: str, *, request: bool = False) -> None:

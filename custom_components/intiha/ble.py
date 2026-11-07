@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-CONNECT_TIMEOUT = 40.0
+CONNECT_TIMEOUT = 16.0
 IO_TIMEOUT = 10.0
 STOP_TIMEOUT = 4.0
 DISCONNECT_TIMEOUT = 5.0
@@ -478,7 +478,7 @@ class BleBridge:
             )
         device = bluetooth.async_ble_device_from_address(self._hass, address, connectable=True)
         if device is None:
-            self._retry_not_before[address] = now + 60.0
+            self._retry_not_before[address] = now + 20.0
             raise BleBridgeError("No connectable Bluetooth adapter can currently reach this device")
         self._used_ids.add(key)
         self._used_order.append(key)
@@ -549,7 +549,7 @@ class BleBridge:
                     # The TrackedClient boundary enforces one attempt even
                     # for errors the helper classifies as transient.
                     max_attempts=1,
-                    timeout=20.0,
+                    timeout=12.0,
                 )
             if (
                 not self._running

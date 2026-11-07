@@ -424,6 +424,41 @@ impl App {
         Ok(())
     }
 
+    /// IntiHA extension to Buttplug v3 device inventory. The device's original
+    /// protocol DeviceName is intentionally left unchanged for compatibility.
+    /// BluetoothAddress is a stable physical key; DisplayName uses the best
+    /// name learned by the HA Bluetooth integration, when available.
+    fn decorate_device(&self, device: &mut Value) {
+        let Some(index) = device["DeviceIndex"].as_u64() else { return; };
+        let Some(info) = self.manager.device_info(index as u32) else { return; };
+        let address = info.identifier().address().to_uppercase();
+        device["BluetoothAddress"] = address.clone().into();
+        if let Some(name) = self.bridge.known_names.lock().unwrap().get(&address).cloned() {
+            let current = device["DeviceDisplayName"].as_str().unwrap_or("");
+            let model = device["DeviceName"].as_str().unwrap_or("");
+            if current.is_empty() || current.eq_ignore_ascii_case(model)
+                || current.eq_ignore_ascii_case("We-Vibe")
+                || current.eq_ignore_ascii_case("We-Vibe 8-bit") {
+                device["DeviceDisplayName"] = name.into();
+            }
+        }
+    }
+
+    fn decorate_public_message(&self, text: &str) -> String {
+        let Ok(mut array) = serde_json::from_str::<Vec<Value>>(text) else {
+            return text.to_owned();
+        };
+        for envelope in &mut array {
+            if let Some(devices) = envelope["DeviceList"]["Devices"].as_array_mut() {
+                for device in devices { self.decorate_device(device); }
+            }
+            if envelope.get("DeviceAdded").is_some() {
+                self.decorate_device(&mut envelope["DeviceAdded"]);
+            }
+        }
+        serde_json::to_string(&array).unwrap_or_else(|_| text.to_owned())
+    }
+
     async fn refresh_devices(&self, prepare: bool) -> Result<(), String> {
         let list = self.v3(json!({"RequestDeviceList":{"Id":1}})).await?;
         let mut devices = list["DeviceList"]["Devices"]
@@ -439,6 +474,7 @@ impl App {
             };
             let address = info.identifier().address().clone();
             device["address"] = address.clone().into();
+            self.decorate_device(device);
             let Some(session) = self.bridge.session_for(&address) else {
                 device["ready"] = false.into();
                 continue;
@@ -972,8 +1008,10 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                                 control_epoch = app.bridge.control_epoch.load(Ordering::SeqCst);
                                 let _ = app.bridge.send(app.bridge.status()).await;
                             }
-                            if let ButtplugSerializedMessage::Text(text) = response
-                                && !bounded_send(&mut socket, Message::Text(text.into())).await { break; }
+                            if let ButtplugSerializedMessage::Text(text) = response {
+                                let enriched = app.decorate_public_message(&text);
+                                if !bounded_send(&mut socket, Message::Text(enriched.into())).await { break; }
+                            }
                         }
                     }
                     Message::Ping(payload) => { if !bounded_send(&mut socket, Message::Pong(payload)).await { break; } }
@@ -985,7 +1023,7 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                 let Some(event) = event else { break; };
                 if server.connected()
                     && let ButtplugSerializedMessage::Text(text) = serializer.serialize(&[event])
-                    && !bounded_send(&mut socket, Message::Text(text.into())).await { break; }
+                    && !bounded_send(&mut socket, Message::Text(app.decorate_public_message(&text).into())).await { break; }
             }
             _ = heartbeat.tick() => {
                 if app.bridge.control_epoch.load(Ordering::SeqCst) != control_epoch { break; }

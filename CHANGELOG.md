@@ -1,3 +1,14 @@
+## 0.3.0b16 - reconnect safety, identity and shorter timeout
+- Expose the stable BLE MAC address and best-known model name to external Intiface/Buttplug clients including Ogg (extra `BluetoothAddress` field and `DeviceDisplayName`).
+- Preserve specific advertised/device identity and prevent generic "We-Vibe" names replacing better names.
+- Reduce connect/pair/service discovery time to a bounded 16s and ordinary engine GATT operation RPC wait from 40s to 25s, while retaining verified stop safety.
+- Never automatically replay old actuator output on the IntiHA side: the external client Ogg decides whether its still-valid Run/Pulse command should resume after a verified stop.
+
+- On loss of any ready Bluetooth connection, revoke the former output generation, including a Home Assistant manual-control session.
+- A new connection must receive the existing verified safe-stop handshake before becoming controllable.
+- Output commands from the old connection are not resumed automatically.
+- A stop cannot reach hardware while the Bluetooth link is disconnected.
+
 ## 0.3.0b14 - known-device reconnection priority
 
 - Keep the engine updated with the set of known, enabled Bluetooth devices.

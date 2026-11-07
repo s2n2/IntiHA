@@ -5,10 +5,10 @@ pub mod server;
 
 /// Public IntiHA release version reported to Home Assistant and clients.
 ///
-/// Home Assistant releases use the existing `0.3.0b14` naming convention,
-/// while Cargo itself requires a SemVer-valid package version (`0.3.0-b14`).
+/// Home Assistant releases use the existing `0.3.0b16` naming convention,
+/// while Cargo itself requires a SemVer-valid package version (`0.3.0-b16`).
 /// Keep these intentionally separate.
-pub const VERSION: &str = "0.3.0b14";
+pub const VERSION: &str = "0.3.0b16";
 
 /// Cargo package version, retained for diagnostics/build provenance.
 pub const CARGO_PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");

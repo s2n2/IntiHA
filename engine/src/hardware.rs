@@ -139,7 +139,7 @@ impl HardwareConnector for HaConnector {
             .bridge
             .rpc(
                 json!({"op":"connect","address":address,"connection_id":id}),
-                Duration::from_secs(50),
+                Duration::from_secs(23),
             )
             .await;
         let result = match result {
@@ -328,9 +328,10 @@ impl HaHardware {
                 // HA keeps the actual I/O deadline at 10s. Its failure path
                 // may also spend 4s on a cached stop, 5s disconnecting, 10s
                 // emitting two lifecycle events and 10s sending the reply.
-                // Allow that bounded cleanup/reporting, not just the write.
+                // Cap ordinary command wait at 25s rather than a 40-50s error path.
+                // Allow bounded cleanup/reporting, not just the write.
                 // This does NOT extend the physical GATT operation timeout.
-                bridge.rpc(args, Duration::from_secs(40)).await
+                bridge.rpc(args, Duration::from_secs(25)).await
             };
             drop(io_guard);
             if let Err(error) = &result {
