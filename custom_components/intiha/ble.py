@@ -501,6 +501,15 @@ class BleBridge:
                 f"Stop GATT write failed: {str(err).strip() or type(err).__name__}"
             ) from err
         _LOGGER.debug("Verified and cached %s stop writes for this BLE session", len(plan))
+        _LOGGER.info(
+            "%s GATT layout: %s",
+            connection.address,
+            "; ".join(
+                f"{str(c.uuid)[:8]}({'/'.join(c.properties)})"
+                for s in connection.client.services
+                for c in s.characteristics
+            ),
+        )
         # Start low-priority, read-only feedback only after the fresh physical
         # connection has passed its stop gate. No telemetry is part of that gate.
         self._start_device_report(connection)
@@ -555,6 +564,8 @@ class BleBridge:
         lock = self._locks.setdefault(address, asyncio.Lock())
         failure_count = 0
         invalid_frames = 0
+        last_frame = ""
+        gave_up = False
         reported_available = False
         last_status = None
 
@@ -597,7 +608,8 @@ class BleBridge:
                             data = bytes(await connection.client.read_gatt_char(characteristic))
                         decoded = decode_wevibe_info(data)
                         if decoded is None:
-                            raise ValueError("Invalid 8-byte We-Vibe info frame")
+                            last_frame = data.hex(" ")
+                            raise ValueError(f"Unrecognised status frame [{last_frame}]")
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
@@ -612,7 +624,7 @@ class BleBridge:
                         detail = (
                             "BLE info read timed out; retrying"
                             if state == "read_timeout" else
-                            "Device returned an unrecognised status frame; retrying"
+                            f"Unrecognised status frame [{last_frame}]; retrying"
                             if state == "invalid_frame" else
                             "Bluetooth status read failed; retrying"
                         )
@@ -635,8 +647,15 @@ class BleBridge:
                     if invalid_frames >= REPORT_MAX_INVALID_FRAMES and not reported_available:
                         # Newer families (8-bit/Bond, Chorus) share the
                         # characteristic but not the frame; stop polling them.
+                        _LOGGER.info(
+                            "%s status characteristic returns [%s], not the classic "
+                            "We-Vibe frame; status polling stopped",
+                            address, last_frame,
+                        )
+                        gave_up = True
                         await status_update(
-                            "unsupported", "Device does not report the classic status frame"
+                            "unsupported",
+                            f"Device does not send the classic status frame (got [{last_frame}])",
                         )
                         return
                     await status_update(*error_status)
@@ -658,7 +677,8 @@ class BleBridge:
                 "type": "device_report_unavailable", "address": address,
                 "connection_id": connection.connection_id,
             })
-            await status_update("disconnected", "Bluetooth status read session ended")
+            if not gave_up:
+                await status_update("disconnected", "Bluetooth status read session ended")
 
     @staticmethod
     def _cancel_device_report(connection: _Connection) -> None:
@@ -676,6 +696,9 @@ class BleBridge:
             BATTERY_LEVEL_CHARACTERISTIC
         )
         if characteristic is None or "read" not in getattr(characteristic, "properties", []):
+            _LOGGER.info(
+                "%s exposes no readable standard Battery Level characteristic", connection.address
+            )
             return
         connection.battery_task = self._spawn(
             self._poll_battery(connection, characteristic), "battery level"
@@ -708,10 +731,12 @@ class BleBridge:
                         data = bytes(await connection.client.read_gatt_char(characteristic))
                     if len(data) >= 1 and 0 <= data[0] <= 100:
                         level = data[0]
+                    else:
+                        _LOGGER.info("%s battery read returned [%s]", address, data.hex(" "))
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # Optional; never disturb the link.
-                    _LOGGER.debug("Battery read failed on %s: %s", address, exc)
+                    _LOGGER.info("Battery read failed on %s: %s", address, exc)
             if level is not None:
                 await self._emit_safely({
                     "type": "battery", "address": address,

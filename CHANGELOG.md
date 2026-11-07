@@ -1,3 +1,8 @@
+## 0.3.0b24 - Feedback and battery diagnostics
+
+- When a device's status characteristic returns something other than the classic We-Vibe frame, the raw bytes are shown in **Device feedback status** and logged once, and polling stops with status `unsupported` (previously overwritten by "session ended").
+- Each connection logs its GATT layout once at INFO, and battery reads log why no level is available, so feedback/battery support can be diagnosed per model.
+
 ## 0.3.0b23 / engine 0.3.0b22 - Reliable stops, device identity, fewer reconnects
 
 - **Pulse/pattern fix:** stops from Buttplug clients (Ogg) and from Home Assistant now go through the official Buttplug driver, with the verified cached stop as a fallback only. Previously the cached stop bypassed the driver's last-command cache, so the next identical command (every repeated pulse, and patterns dipping to zero) was silently dropped.
