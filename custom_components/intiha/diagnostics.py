@@ -28,6 +28,12 @@ async def async_get_config_entry_diagnostics(hass, entry):
                 "ble_pairing_required": device.pairing_required,
                 "vibration_features": len(device.scalar_features()),
                 "battery_read_supported": device.battery_index() is not None,
+                # No MAC, unique name, GATT bytes or user activity in exports.
+                "feedback_status": device.feedback_status,
+                "feedback_profile": device.feedback_profile,
+                "feedback_detail": device.feedback_detail,
+                "feedback_reads_attempted": device.feedback_attempts,
+                "feedback_consecutive_failures": device.feedback_failures,
             }
             for device in coordinator.devices.values()
         ],

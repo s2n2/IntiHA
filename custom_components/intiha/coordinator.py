@@ -130,6 +130,9 @@ class DeviceState:
     reported_at: datetime | None = None
     feedback_status: str = "disconnected"
     feedback_detail: str | None = None
+    feedback_profile: str = "not_checked"
+    feedback_attempts: int = 0
+    feedback_failures: int = 0
     error: str | None = None
     phase: str = "offline"
     pairing_required: bool = False
@@ -169,7 +172,7 @@ class IntiHACoordinator:
         self.discovered: dict[str, dict[str, Any]] = {}
         self.devices: dict[str, DeviceState] = {}
         # Status can arrive just before the engine's first ready inventory.
-        self._feedback_pending: dict[tuple[str, str], tuple[str, str]] = {}
+        self._feedback_pending: dict[tuple[str, str], tuple[str, str, str, int, int]] = {}
         self._listeners: set[Callable[[], None]] = set()
         self._intensity_listeners: dict[str, set[Callable[[], None]]] = {}
         self._request_tasks: set[asyncio.Task] = set()
@@ -765,7 +768,7 @@ class IntiHACoordinator:
         device.reported_at = None
 
     def _update_feedback_status(self, message: dict[str, Any]) -> None:
-        """Keep optional BLE feedback diagnostics on the right session."""
+        """Record optional readback capability for the current BLE session."""
         address = str(message.get("address", "")).upper()
         session = message.get("connection_id")
         state = message.get("status")
@@ -780,21 +783,31 @@ class IntiHACoordinator:
             or not isinstance(detail, str)
         ):
             return
+        profile = message.get("profile", "not_checked")
+        if profile not in {
+            "not_checked", "classic_wevibe_read", "classic_wevibe_unreadable",
+            "no_verified_readback",
+        }:
+            return
+        attempts = message.get("attempts", 0)
+        failures = message.get("failures", 0)
+        if any(type(item) is not int or not 0 <= item <= 1000000 for item in (attempts, failures)):
+            return
         device = self.devices.get(address)
         if device is None:
             return
-        safe_detail = detail[:160]
+        result = (state, detail[:160], profile, attempts, failures)
         if device.connection_id == session and device.connected:
-            device.feedback_status = state
-            device.feedback_detail = safe_detail
+            (
+                device.feedback_status, device.feedback_detail, device.feedback_profile,
+                device.feedback_attempts, device.feedback_failures,
+            ) = result
             self._notify_intensity(address)
         elif self.enabled and self.engine_connected:
-            # The BLE bridge can finish the verified STOP gate before the
-            # engine publishes its ready inventory. Keep only a small, bounded
-            # status queue. Never apply it to a different session.
+            # The feedback capability event can precede the ready inventory.
             if len(self._feedback_pending) >= 64:
                 self._feedback_pending.pop(next(iter(self._feedback_pending)))
-            self._feedback_pending[(address, session)] = (state, safe_detail)
+            self._feedback_pending[(address, session)] = result
 
     def _update_device_report(self, message: dict[str, Any]) -> None:
         """Use only reads from the currently authorised BLE generation."""
@@ -894,6 +907,9 @@ class IntiHACoordinator:
                 self._clear_reported(device)
                 device.feedback_status = "disconnected"
                 device.feedback_detail = "Bluetooth device not connected"
+                device.feedback_profile = "not_checked"
+                device.feedback_attempts = 0
+                device.feedback_failures = 0
                 device.battery = None
             if description.get("ready") is True:
                 connected.add(address)
@@ -926,7 +942,9 @@ class IntiHACoordinator:
                     device.feedback_detail = "Awaiting BLE feedback capability check"
                 pending = self._feedback_pending.pop((address, connection_id), None)
                 if pending is not None:
-                    device.feedback_status, device.feedback_detail = pending
+                    (device.feedback_status, device.feedback_detail,
+                     device.feedback_profile, device.feedback_attempts,
+                     device.feedback_failures) = pending
                 device.phase = "ready"
                 device.error = None
             # A routine inventory refresh must not erase a useful failure.
@@ -938,6 +956,8 @@ class IntiHACoordinator:
                 device.connection_id = None
                 device.outputs.clear()
                 self._clear_reported(device)
+                device.feedback_status = "disconnected"
+                device.feedback_detail = "Bluetooth device not connected"
                 device.battery = None
         self._save()
 

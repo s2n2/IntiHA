@@ -1,3 +1,11 @@
+## 0.3.0b21 – Verified classic BLE feedback and clear diagnostics (HACS-only)
+
+- Validate the documented classic We-Vibe GATT readback endpoint (both vendor control and information characteristics) before enabling device-reported values. Other protocols remain unsupported unless an actual verified device read exists.
+- Distinguish unsupported profiles, unreadable characteristics, malformed reports and real proxy timeouts. No command-derived values are labelled as device feedback.
+- Keep bounded, low-priority readback attempts with ten-second backoff after repeated failure; do not affect STOP verification, motor commands or public Buttplug/WebSocket messages.
+- Show readback profile, probe counts and a safe error explanation in the per-device Feedback status sensor and in redacted integration diagnostics.
+- This release only changes Home Assistant Python integration code. The existing working 0.3.0b20 Proxy Engine is retained without rebuilding it.
+
 ## v0.3.0b20 — Feedback diagnostics and resilient reads
 
 - Added a per-device **Device feedback status** diagnostic sensor to explain unsupported GATT profiles, unreadable status characteristics, read timeouts and malformed frames.

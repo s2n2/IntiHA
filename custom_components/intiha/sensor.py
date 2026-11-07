@@ -175,12 +175,16 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                 "pattern_code": device.reported_pattern_code,
                 "last_read": device.reported_at.isoformat() if device.reported_at else None,
                 "sensor_source": "wevibe_info_characteristic",
+                "feedback_status": device.feedback_status,
             }
         if self.address and self.key == "feedback_status":
             device = self.coordinator.devices[self.address]
             return {
                 "detail": device.feedback_detail,
                 "device_profile": device.protocols,
+                "readback_profile": device.feedback_profile,
+                "reads_attempted": device.feedback_attempts,
+                "consecutive_read_failures": device.feedback_failures,
                 "last_successful_read": device.reported_at.isoformat() if device.reported_at else None,
                 "commanded_intensity_is_available_separately": True,
             }

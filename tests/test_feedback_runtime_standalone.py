@@ -34,6 +34,7 @@ async def run():
     namespace = {
         'Any': object, '_Connection': object, 'asyncio': FastAsyncio,
         'WEVIBE_INFO':'f000b000-0451-4000-b000-000000000000',
+        'WEVIBE_CONTROL':'f000c000-0451-4000-b000-000000000000',
         'REPORT_INTERVAL':1.0, 'REPORT_READ_TIMEOUT':.1,
         'decode_wevibe_info':lambda data: {
             'intensity':70,'internal_intensity':70,'external_intensity':0,
@@ -59,6 +60,7 @@ async def run():
     b._start_device_report(con)
     await asyncio.gather(*tasks)
     assert trace[-1]['status']=='unsupported',trace
+    assert trace[-1]['profile']=='no_verified_readback',trace
     assert con.report_task is None
     trace.clear(); tasks.clear()
     char=SimpleNamespace(properties=['read'])
@@ -86,7 +88,8 @@ async def run():
     coord_ns = {"Any": object}
     Coordinator = extract_methods(COORD_SOURCE,'IntiHACoordinator',['_update_feedback_status'],coord_ns)
     coordinator=Coordinator()
-    live=SimpleNamespace(connection_id=None,connected=False,feedback_status='disconnected',feedback_detail=None)
+    live=SimpleNamespace(connection_id=None,connected=False,feedback_status='disconnected',feedback_detail=None,
+                         feedback_profile='not_checked', feedback_attempts=0, feedback_failures=0)
     coordinator.devices={con.address:live}
     coordinator._feedback_pending={}
     coordinator.enabled=True
@@ -94,13 +97,16 @@ async def run():
     observed=[]
     coordinator._notify_intensity=lambda address:observed.append(address)
     coordinator._update_feedback_status({'address':con.address,'connection_id':'c1','status':'unsupported','detail':'Not found'})
-    assert coordinator._feedback_pending[(con.address,'c1')]==('unsupported','Not found')
+    assert coordinator._feedback_pending[(con.address,'c1')]==('unsupported','Not found','not_checked',0,0)
     live.connection_id='c1';live.connected=True
     coordinator._update_feedback_status({'address':con.address,'connection_id':'old','status':'available','detail':'stale'})
     assert live.feedback_status=='disconnected'
     coordinator._update_feedback_status({'address':con.address,'connection_id':'c1','status':'read_error','detail':'retrying'})
     assert live.feedback_status=='read_error'
-    assert observed==[con.address]
+    coordinator._update_feedback_status({'address':con.address,'connection_id':'c1',
+             'status':'available','detail':'valid','profile':'classic_wevibe_read','attempts':3,'failures':0})
+    assert (live.feedback_profile, live.feedback_attempts, live.feedback_failures)==('classic_wevibe_read',3,0)
+    assert observed==[con.address, con.address]
     print('Standalone feedback tests passed: unsupported, transient 3-timeout recovery, session gating.')
 
 asyncio.run(run())
