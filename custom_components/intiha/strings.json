@@ -173,6 +173,9 @@
       },
       "disabled_devices": {
         "name": "Connection disabled"
+      },
+      "intensity": {
+        "name": "Commanded intensity"
       }
     }
   },

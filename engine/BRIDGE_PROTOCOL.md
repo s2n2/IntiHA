@@ -12,7 +12,7 @@ HA first sends:
 {"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60,"blocked_addresses":[]}
 ```
 
-The engine replies `{"type":"hello","protocol":1,"version":"0.3.0b17"}`.
+The engine replies `{"type":"hello","protocol":1,"version":"0.3.0b18"}`.
 The socket establishes a new generation; previous pending RPCs and BLE sessions
 must never survive it. `connection_id` is a new UUID for each physical connect.
 The address is uppercase. No command is replayed after reconnection.
@@ -161,3 +161,14 @@ and client listeners bind different ports. A new process waits disabled until
 HA sends its current enabled setting in the hello. A newly installed
 integration enables discovery by default; an explicitly switched-off
 integration retains its off state.
+
+
+## Private intensity telemetry (0.3.0b18)
+
+Accepted vibration commands (including those from external clients) may yield a best-effort private bridge event such as:
+
+```json
+{"type":"output_level","address":"AA:BB:CC:DD:EE:FF","connection_id":"session-id","levels":[{"index":0,"percent":45}]}
+```
+
+Only the current BLE session is accepted. Events are capped to about 4 Hz per device with zero values forwarded immediately. The event is not part of the public Buttplug protocol; it must never alter Buttplug ServerInfo, DeviceList or Ok responses. Command telemetry is not motor feedback. STOP events continue to use the existing `output_clear` message.

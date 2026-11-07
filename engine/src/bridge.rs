@@ -268,6 +268,15 @@ impl Bridge {
             .map_err(|_| device_error("Home Assistant bridge is offline"))
     }
 
+    /// Best-effort telemetry must never block Bluetooth writes or protocol replies.
+    pub fn try_send_telemetry(&self, value: Value) -> bool {
+        self.writer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(_, writer)| writer.try_send(value).is_ok())
+    }
+
     pub async fn rpc(&self, mut value: Value, timeout: Duration) -> DeviceResult<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let operation = value["op"].as_str().unwrap_or("unknown").to_owned();

@@ -161,6 +161,7 @@ class IntiHACoordinator:
         self.discovered: dict[str, dict[str, Any]] = {}
         self.devices: dict[str, DeviceState] = {}
         self._listeners: set[Callable[[], None]] = set()
+        self._intensity_listeners: dict[str, set[Callable[[], None]]] = {}
         self._request_tasks: set[asyncio.Task] = set()
         self._background_tasks: set[asyncio.Task] = set()
         self._runner: asyncio.Task | None = None
@@ -220,6 +221,26 @@ class IntiHACoordinator:
     @callback
     def _notify(self) -> None:
         for listener in tuple(self._listeners):
+            listener()
+
+    @callback
+    def add_intensity_listener(
+        self, address: str, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        self._intensity_listeners.setdefault(address, set()).add(listener)
+
+        def unsubscribe() -> None:
+            listeners = self._intensity_listeners.get(address)
+            if listeners is not None:
+                listeners.discard(listener)
+                if not listeners:
+                    self._intensity_listeners.pop(address, None)
+
+        return unsubscribe
+
+    @callback
+    def _notify_intensity(self, address: str) -> None:
+        for listener in tuple(self._intensity_listeners.get(address, ())):
             listener()
 
     def _remember_specific_name(
@@ -642,17 +663,23 @@ class IntiHACoordinator:
             self._last_advertisement.clear()
             self._spawn(self._async_send_cached(epoch), "cached advertisements")
         elif kind == "status":
+            previous_owner = self.client_connected
             self.client_connected = bool(message.get("client_connected", False))
             self.scanning = bool(message.get("scanning", False))
             if message.get("version"):
                 self.version = str(message["version"])
             if message.get("last_error"):
                 self.last_error = self._safe_error(str(message["last_error"]))
-            if self.client_connected:
+            if self.client_connected and not previous_owner:
+                # Ownership handover invalidates stale manual slider values.
+                # Do NOT clear live Ogg command telemetry on every status tick.
                 for device in self.devices.values():
                     device.outputs.clear()
         elif kind == "devices":
             self._update_devices(message.get("devices", []))
+        elif kind == "output_level":
+            self._update_commanded_intensity(message)
+            return  # High-frequency updates only refresh this device's sensor.
         elif kind == "device_status":
             address = str(message.get("address", "")).upper()
             device = self.devices.get(address)
@@ -717,6 +744,42 @@ class IntiHACoordinator:
         elif kind == "sensor":
             self._update_sensor(message.get("message", {}))
         self._notify()
+
+    def _update_commanded_intensity(self, message: dict[str, Any]) -> None:
+        """Accept private engine telemetry only for the current live BLE session."""
+        address = str(message.get("address", "")).upper()
+        device = self.devices.get(address)
+        if (
+            not self.enabled
+            or not self.engine_connected
+            or device is None
+            or not device.connected
+            or not device.connection_id
+            or message.get("connection_id") != device.connection_id
+        ):
+            return
+        levels = message.get("levels")
+        if not isinstance(levels, list) or len(levels) > 16:
+            return
+        changed = False
+        for item in levels:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index")
+            value = item.get("percent")
+            if (
+                type(index) is not int
+                or not 0 <= index < 16
+                or type(value) not in (int, float)
+                or not math.isfinite(value)
+                or not 0 <= value <= 100
+            ):
+                continue
+            if device.outputs.get(index) != value:
+                device.outputs[index] = value
+                changed = True
+        if changed:
+            self._notify_intensity(address)
 
     def _register_device(self, address: str, name: str) -> DeviceState | None:
         """Remember a supported device identified by the official engine."""

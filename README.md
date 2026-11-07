@@ -1,6 +1,6 @@
 # IntiHA
 
-> **0.3.0b17 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
+> **0.3.0b18 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
 
 
 **A plug-and-play Buttplug server using Home Assistant's Bluetooth coverage.**
@@ -16,11 +16,11 @@ Assistant owns BLE scanning, adapter selection and GATT through its connectable
 adapters and ESPHome proxies. The Rust engine owns Buttplug protocol matching,
 device drivers and the external Buttplug server.
 
-**Version 0.3.0b17 - proxy recovery and clearer connection diagnostics beta.**
+**Version 0.3.0b18 - per-device commanded intensity telemetry beta.**
 
 This package keeps broad/service-fingerprint discovery and the persistent identity fixes. The Engine app currently uses a **local Supervisor Docker build**, so updates may show 0% progress while Cargo compiles; no published GHCR image is required. Device identity remains persistent. IntiHA now remembers the best specific name it has learned for each Bluetooth address, actively asks Home Assistant for scan-response names when a supported device is otherwise generic, and can recover the standard BLE Device Name after connection. A later generic Buttplug label can no longer downgrade a learned name such as **Bond**. Each discovered device retains the persistent **Connect to this device** switch introduced in b7.
 
-0.3.0b16 preserves per-device Bluetooth retry cooldowns and connection diagnostics, and sends an explicit MAC (`BluetoothAddress`) and best-known specific model name (`DeviceDisplayName`) to external Intiface clients such as Ogg. Generic vendor labels will not overwrite a previously learned specific name. BLE connect/pair/service discovery now has a 16-second outer timeout, with a shorter ordinary Rust-side operation deadline. Reconnection starts with verified STOP; IntiHA never replays output on its own. Ogg independently decides whether to restore a still-valid Run/Pulse intention. Connected/disconnected summaries remain available.
+0.3.0b18 adds a **Commanded intensity** sensor to each device, including accepted vibration commands from Ogg and other standard Intiface clients. The sensor reports command percentages rather than physical motor feedback, and does not change the public Buttplug protocol. Per-device BLE retry cooldowns, verified STOP, the shorter connection timeouts and internal best-known names remain in place. The extra MAC/model fields added to public messages in b16 remain **removed**, as they caused Ogg connection failures.
 
 The Home Assistant **Server enabled** switch gates the complete user-facing
 Intiface service. When it is off, IntiHA stops outputs, discovery and BLE
@@ -55,7 +55,9 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 
 | Version | What changed |
 |---|---|
-| **0.3.0b16** | Expose BLE MAC and specific names to external Intiface clients, speed up connection failure feedback and retain the verified STOP safety barrier; do not replay output within IntiHA. |
+| **0.3.0b18** | Add live per-device commanded vibration intensity sensors using the private engine bridge; no change to public Buttplug messages. |
+| **0.3.0b17** | Restore strict public Buttplug compatibility and remove b16's extra MAC/name metadata from public messages. |
+| **0.3.0b16** | Shorter BLE connection timeouts and stop-verified recovery. Public MAC/name enrichment was removed again in b17. |
 | **0.3.0b9** | Pull a prebuilt multi-arch Engine image instead of compiling Rust locally during HA updates; retain persistent best-known names, active-scan/GATT name recovery and per-device connection policy. |
 | **0.3.0b6** | Service-fingerprint discovery for nameless BLE devices; post-connect GATT validation remains mandatory. |
 | **0.3.0b5** | Build repair for 0.3.0b4: valid Cargo SemVer internally (`0.3.0-b5`) while IntiHA/HA report `0.3.0b5`; master-switch behaviour unchanged. |
@@ -73,10 +75,10 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
 
-## Updating to 0.3.0b17
+## Updating to 0.3.0b18
 
 Update **both** the IntiHA HACS integration and **IntiHA Proxy Engine** to
-0.3.0b16. The Engine currently builds its Rust binary locally inside Docker;
+0.3.0b18. The Engine currently builds its Rust binary locally inside Docker;
 allow the build to complete, and check Supervisor logs if the progress UI
 stays at 0%. Before the first update from 0.3.0b6, turn **Server enabled** off and
 wait for Connected devices to reach 0; this avoids the old b6 shutdown path
@@ -431,3 +433,12 @@ To update, install the complete b17 repository in GitHub, refresh the
 IntiHA add-on repository, update **both the IntiHA HACS integration and the
 IntiHA Proxy Engine app**, then reload Ogg. If the previous local Docker
 build is still running, let it finish before trying another update.
+
+
+### Device intensity sensors (v0.3.0b18)
+
+Each connected device has a **Commanded intensity** sensor, showing 0-100% from the last accepted vibration output command, including commands from external Intiface clients such as Ogg. If a device has more than one vibration actuator, the main sensor shows the highest commanded percentage and its `vibration_channels` attribute lists the individual commanded values.
+
+This is **not physical motor telemetry**: it cannot verify that the device received or acted on a BLE command, and it cannot measure autonomous native firmware patterns. Sensor state is unavailable on disconnection, and stops reset the commanded value to 0 after a confirmed stop. Data is passed only over IntiHA's existing private Home Assistant bridge; standard Buttplug protocol messages remain unchanged. Ogg's dashboard card must be updated separately to graph this sensor instead of its estimated pattern.
+
+These sensors can generate frequent Home Assistant history writes. Consider excluding `sensor.*_commanded_intensity` from Recorder if you only need live values.

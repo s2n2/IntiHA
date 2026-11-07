@@ -36,6 +36,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             IntiHASensor(coordinator, key, address)
             for key in (
                 "device_status",
+                "intensity",
                 "battery",
                 "signal_strength",
                 "last_seen_via",
@@ -51,7 +52,12 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
     def __init__(self, coordinator, key, address=None):
         super().__init__(coordinator, key, address)
         self.key = key
-        if key == "battery":
+        if key == "intensity":
+            self._attr_entity_category = None
+            self._attr_icon = "mdi:vibrate"
+            self._attr_native_unit_of_measurement = PERCENTAGE
+            self._attr_suggested_display_precision = 0
+        elif key == "battery":
             self._attr_device_class = SensorDeviceClass.BATTERY
             self._attr_native_unit_of_measurement = PERCENTAGE
         elif key == "signal_strength":
@@ -78,6 +84,22 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                 "control_owner": ["none", "home_assistant", "external_client"],
             }[key]
 
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self.address and self.key == "intensity":
+            self.async_on_remove(
+                self.coordinator.add_intensity_listener(
+                    self.address, self.async_write_ha_state
+                )
+            )
+
+    @property
+    def available(self) -> bool:
+        if self.key == "intensity" and self.address:
+            device = self.coordinator.devices[self.address]
+            return self.coordinator.enabled and self.coordinator.engine_connected and device.connected
+        return True
+
     @property
     def native_value(self):
         coordinator = self.coordinator
@@ -94,6 +116,7 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                     else "offline"
                 )
             return {
+                "intensity": max(device.outputs.values(), default=0),
                 "battery": device.battery,
                 "signal_strength": device.rssi,
                 "last_seen_via": device.source,
@@ -114,6 +137,13 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
+        if self.address and self.key == "intensity":
+            device = self.coordinator.devices[self.address]
+            return {
+                "value_type": "last_commanded_output",
+                "hardware_feedback": False,
+                "vibration_channels": dict(sorted(device.outputs.items())),
+            }
         if self.address and self.key == "device_status":
             device = self.coordinator.devices[self.address]
             return {

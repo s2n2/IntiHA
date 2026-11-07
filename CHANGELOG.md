@@ -1,3 +1,12 @@
+## 0.3.0b18 - per-device commanded vibration intensity sensors
+- Add a per-device **Commanded intensity** sensor (0-100%) using the highest vibration actuator command; multi-motor values are also available in `vibration_channels` attributes.
+- Capture accepted ScalarCmd, VibrateCmd and SingleMotorVibrateCmd commands from external clients (including Ogg) using a **private engine-to-Home-Assistant bridge event**. Public Buttplug v3 DeviceList, handshake, command results and events remain unchanged.
+- Publish best-effort updates at most four times per second per device; send zero-output updates promptly and keep telemetry off the blocking Bluetooth-control path.
+- Match telemetry to the current BLE connection ID. Set the sensor unavailable while disconnected and reset the displayed command to zero on a confirmed stop/reconnection.
+- Preserve external client output telemetry when ordinary engine status messages arrive. Do not interfere with stop verification, automatic reconnection or the Ogg pulse watchdog.
+- This sensor reports **commanded intensity, not actual motor speed**; firmware-native patterns that run internally without new commands cannot be measured by this sensor.
+- Frequent sensor updates can increase Home Assistant recorder history. Consider excluding the commanded intensity sensors from Recorder if they are used only for a live dashboard.
+
 ## 0.3.0b17 - restore standard Buttplug server compatibility
 - Revert the b16 external WebSocket MAC/model-name enrichment entirely.
 - Forward Buttplug ServerInfo, DeviceList, DeviceAdded, Ok, Error, and all events without editing their JSON. This removes the suspected cause of Ogg looping between Searching and Connecting.

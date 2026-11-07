@@ -27,8 +27,9 @@ use buttplug_server_device_config::load_protocol_configs;
 use futures::{Sink, SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -76,6 +77,7 @@ pub struct App {
     last_inventory: Mutex<Value>,
     stop_lock: Mutex<()>,
     stopping: AtomicBool,
+    last_intensity_emit: StdMutex<HashMap<String, (String, Instant)>>,
 }
 struct ReconnectPause<'a>(&'a AtomicBool);
 impl Drop for ReconnectPause<'_> {
@@ -119,6 +121,7 @@ impl App {
             last_inventory: Mutex::new(Value::Null),
             stop_lock: Mutex::new(()),
             stopping: AtomicBool::new(false),
+            last_intensity_emit: StdMutex::new(HashMap::new()),
         });
         app.v3(json!({"RequestServerInfo":{"Id":1,"ClientName":"IntiHA management","MessageVersion":3}})).await.map_err(anyhow::Error::msg)?;
         Ok(app)
@@ -171,6 +174,52 @@ impl App {
                 .to_owned());
         }
         Ok(message)
+    }
+
+    /// Mirror accepted vibration setpoints over the private HA bridge.
+    /// The public Buttplug response and DeviceList stay completely unchanged.
+    fn report_intensity(&self, command: &Value) {
+        let Some((index, levels)) = commanded_vibration_levels(command) else {
+            return;
+        };
+        let Some(info) = self.manager.device_info(index) else {
+            return;
+        };
+        let address = info.identifier().address().clone();
+        let Some(session) = self.bridge.session_for(&address) else {
+            return;
+        };
+        if !session.connected.load(Ordering::SeqCst)
+            || !session.ready.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        // Limit HA state writes to ~4 Hz per device while ensuring zero-output
+        // commands are never suppressed by the sampler. When a queue is full,
+        // drop optional telemetry instead of delaying a motor command/STOP.
+        let all_zero = levels.iter().all(|(_, level)| *level == 0.0);
+        let now = Instant::now();
+        let mut last_emit = self.last_intensity_emit.lock().unwrap();
+        if !all_zero
+            && last_emit.get(&address).is_some_and(|(connection_id, old)| {
+                connection_id == &session.id
+                    && now.saturating_duration_since(*old) < Duration::from_millis(250)
+            })
+        {
+            return;
+        }
+        let readings: Vec<Value> = levels
+            .into_iter()
+            .map(|(actuator, level)| json!({"index": actuator, "percent": level}))
+            .collect();
+        if self.bridge.try_send_telemetry(json!({
+            "type": "output_level",
+            "address": address,
+            "connection_id": session.id,
+            "levels": readings,
+        })) {
+            last_emit.insert(address, (session.id.clone(), now));
+        }
     }
 
     pub async fn stop_all(&self) -> Result<(), String> {
@@ -376,7 +425,10 @@ impl App {
                         .await?;
                     return Ok(json!({"message":{"Ok":{"Id":message[name]["Id"]}}}));
                 }
-                let response = self.v3(message).await?;
+                let response = self.v3(message.clone()).await?;
+                if movement {
+                    self.report_intensity(&message);
+                }
                 if movement {
                     *self.bridge.manual_deadline.lock().unwrap() = Some(
                         Instant::now()
@@ -719,6 +771,55 @@ impl App {
     }
 }
 
+/// Decode only standard vibration commands; never infer physical motor feedback.
+/// Non-vibration actuator types and malformed intensity values are ignored.
+fn commanded_vibration_levels(message: &Value) -> Option<(u32, Vec<(u32, f64)>)> {
+    let (name, command) = message.as_object()?.iter().next()?;
+    if message.as_object()?.len() != 1 {
+        return None;
+    }
+    let index = u32::try_from(command.get("DeviceIndex")?.as_u64()?).ok()?;
+    let mut levels = Vec::new();
+    match name.as_str() {
+        "ScalarCmd" => {
+            for value in command.get("Scalars")?.as_array()?.iter().take(16) {
+                if value.get("ActuatorType")?.as_str()? != "Vibrate" {
+                    continue;
+                }
+                let channel = u32::try_from(value.get("Index")?.as_u64()?).ok()?;
+                let intensity = value.get("Scalar")?.as_f64()?;
+                if !intensity.is_finite() || !(0.0..=1.0).contains(&intensity) {
+                    return None;
+                }
+                levels.push((channel, (intensity * 100.0).round()));
+            }
+        }
+        "VibrateCmd" => {
+            for value in command.get("Speeds")?.as_array()?.iter().take(16) {
+                let channel = u32::try_from(value.get("Index")?.as_u64()?).ok()?;
+                let intensity = value.get("Speed")?.as_f64()?;
+                if !intensity.is_finite() || !(0.0..=1.0).contains(&intensity) {
+                    return None;
+                }
+                levels.push((channel, (intensity * 100.0).round()));
+            }
+        }
+        "SingleMotorVibrateCmd" => {
+            let intensity = command.get("Speed")?.as_f64()?;
+            if !intensity.is_finite() || !(0.0..=1.0).contains(&intensity) {
+                return None;
+            }
+            levels.push((0, (intensity * 100.0).round()));
+        }
+        _ => return None,
+    }
+    if levels.is_empty() {
+        None
+    } else {
+        Some((index, levels))
+    }
+}
+
 fn one_message_name(value: &Value) -> Result<&str, String> {
     let object = value.as_object().ok_or("A command must be an object")?;
     if object.len() != 1 {
@@ -946,7 +1047,9 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                                             continue;
                                     }
                             }
+                            let movement_command = external_message_value(&message).ok();
                             let result = tokio::time::timeout(Duration::from_secs(20), server.parse_message(message)).await;
+                            let succeeded = matches!(&result, Ok(Ok(_)));
                             let response = match result {
                                 Ok(Ok(response)) | Ok(Err(response)) => serializer.serialize(&[response]),
                                 Err(_) => {
@@ -971,6 +1074,11 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                                 owns_control = true;
                                 control_epoch = app.bridge.control_epoch.load(Ordering::SeqCst);
                                 let _ = app.bridge.send(app.bridge.status()).await;
+                            }
+                            if succeeded {
+                                if let Some(command) = movement_command.as_ref() {
+                                    app.report_intensity(command);
+                                }
                             }
                             // Forward the official Buttplug response unchanged.
                             // Out-of-schema MAC/name fields broke client handshakes in b16.
@@ -1170,6 +1278,23 @@ mod tests {
         assert!(!app.bridge.reconnect_paused.load(Ordering::SeqCst));
         app.bridge.detach(epoch);
         app.shutdown().await;
+    }
+
+    #[test]
+    fn extracts_only_valid_vibration_commands_for_private_telemetry() {
+        let scalar = json!({"ScalarCmd":{"Id":1,"DeviceIndex":3,"Scalars":[
+            {"Index":0,"Scalar":0.6,"ActuatorType":"Vibrate"},
+            {"Index":1,"Scalar":0.8,"ActuatorType":"Rotate"}
+        ]}});
+        assert_eq!(commanded_vibration_levels(&scalar), Some((3, vec![(0, 60.0)])));
+        let vibrate = json!({"VibrateCmd":{"DeviceIndex":2,"Speeds":[{"Index":1,"Speed":0.25}]}});
+        assert_eq!(commanded_vibration_levels(&vibrate), Some((2, vec![(1, 25.0)])));
+        let single = json!({"SingleMotorVibrateCmd":{"DeviceIndex":2,"Speed":0.0}});
+        assert_eq!(commanded_vibration_levels(&single), Some((2, vec![(0, 0.0)])));
+        assert_eq!(commanded_vibration_levels(&json!({"ServerInfo":{"Id":1}})), None);
+        assert_eq!(commanded_vibration_levels(&json!({"ScalarCmd":{"DeviceIndex":1,"Scalars":[
+            {"Index":0,"Scalar":2.0,"ActuatorType":"Vibrate"}
+        ]}})), None);
     }
 
     #[tokio::test]
