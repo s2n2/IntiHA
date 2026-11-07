@@ -1,3 +1,12 @@
+## 0.3.0b23 / engine 0.3.0b21 - Reliable stops, device identity, fewer reconnects
+
+- **Pulse/pattern fix:** stops from Buttplug clients (Ogg) and from Home Assistant now go through the official Buttplug driver, with the verified cached stop as a fallback only. Previously the cached stop bypassed the driver's last-command cache, so the next identical command (every repeated pulse, and patterns dipping to zero) was silently dropped.
+- **Stop is no longer a disconnect:** HA Stop all, per-device stop and the manual-control timeout keep the Bluetooth link. Only switching IntiHA off, bridge loss and shutdown disconnect devices.
+- **External clients are no longer kicked** when a single device drops or reconnects; that is reported with DeviceRemoved/DeviceAdded as in Intiface Central.
+- **Protocol guessing is safe:** a learned device name is never forgotten when a proxy forwards a nameless advertisement. A protocol guessed from a nameless advertisement (classic We-Vibe, We-Vibe 8-bit and Chorus share one GATT layout) is only initialised if the device's GATT name confirms it; otherwise the link is closed before any packet is written and the device reconnects with its real profile. This prevents the classic encoding (out-of-range speeds) reaching a Bond.
+- New read-only `GET /intiha/devices` on the client port maps DeviceIndex to Bluetooth address so clients can de-duplicate devices; Buttplug messages stay schema-exact.
+- Classic We-Vibe status polling slowed to 5 s, paused while commands are flowing, and stopped for devices that do not send the classic frame.
+- Battery: read the standard Bluetooth Battery Level every 5 minutes when a device exposes it (upstream We-Vibe profiles declare no battery sensor).
 ## 0.3.0b22 - Commanded intensity recovery (HACS-only)
 
 - Restore the known-working v0.3.0b20 BLE feedback and commanded-output implementation, rolling back experimental b21 compatibility changes.

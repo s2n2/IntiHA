@@ -75,6 +75,25 @@ impl HaConnector {
         }
     }
 }
+impl HaConnector {
+    /// A guessed (alias) protocol may proceed only when the device's own
+    /// name maps to that same protocol, or when the name is unknown to the
+    /// device configuration and the service maps to exactly one protocol.
+    fn guess_confirmed(&self, gatt_name: Option<&str>) -> bool {
+        let named: Vec<String> = gatt_name
+            .map(|name| {
+                let mut advertisement = self.advertisement.clone();
+                advertisement.name = name.trim().to_owned();
+                self.bridge.protocols_matching(&advertisement)
+            })
+            .unwrap_or_default();
+        if named.is_empty() {
+            return self.bridge.alias_candidate_count(&self.advertisement.address) == 1;
+        }
+        named.iter().any(|protocol| self.protocol_hints.contains(protocol))
+    }
+}
+
 impl fmt::Debug for HaConnector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HaConnector").finish_non_exhaustive()
@@ -95,6 +114,9 @@ struct GattService {
 #[derive(Deserialize)]
 struct ConnectResult {
     services: Vec<GattService>,
+    /// GATT Device Name (0x2A00) or a useful BLEDevice name, when HA found one.
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[async_trait]
@@ -186,6 +208,31 @@ impl HardwareConnector for HaConnector {
                 ));
             }
         };
+        if let Some(name) = result.name.as_deref() {
+            self.bridge.learn_name(address, name);
+        }
+        if self.match_specifier.is_some() && !self.guess_confirmed(result.name.as_deref()) {
+            // A protocol guessed from a nameless advertisement is refused
+            // unless the device's own name confirms it. Nothing has been
+            // written yet; the next attempt matches by the learned name.
+            tracing::warn!(
+                address = %address,
+                guessed = ?self.protocol_hints,
+                gatt_name = ?result.name,
+                "Guessed protocol not confirmed by the device name; not initialising"
+            );
+            let _ = self
+                .bridge
+                .rpc(
+                    json!({"op":"disconnect","address":address,"connection_id":id}),
+                    Duration::from_secs(12),
+                )
+                .await;
+            self.bridge.failed_attempt(address);
+            return Err(device_error(
+                "Device name does not confirm the guessed protocol; retrying with its real profile",
+            ));
+        }
         let session = Arc::new(Session::new(address, &id, false));
         self.bridge.register(session.clone());
         self.bridge
@@ -554,6 +601,50 @@ mod tests {
         assert_eq!(safe_initial_write(false, true, uuid, &pulse), pulse);
         assert_eq!(safe_initial_write(true, false, uuid, &pulse), pulse);
         assert_eq!(safe_initial_write(true, true, "other", &pulse), pulse);
+    }
+
+    fn wevibe_guess(bridge: &Arc<Bridge>, protocol: &str) -> HaConnector {
+        let candidates = bridge.candidates_for_test("50:F1:4A:61:2F:2B");
+        let (_, specifier) = candidates
+            .into_iter()
+            .find(|(name, _)| name == protocol)
+            .expect("protocol candidate");
+        HaConnector::new(
+            bridge.clone(),
+            serde_json::from_value(json!({
+                "address":"50:F1:4A:61:2F:2B","name":"",
+                "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],
+                "manufacturer_data":{},"rssi":null,"source":null
+            }))
+            .unwrap(),
+            vec![protocol.to_owned()],
+            Some(specifier),
+        )
+    }
+
+    #[tokio::test]
+    async fn guessed_wevibe_protocol_requires_confirming_device_name() {
+        let bridge = Bridge::new(Arc::new(
+            buttplug_server_device_config::load_protocol_configs(&None, &None, false)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ));
+        bridge
+            .advertisement(json!({
+                "address":"50:F1:4A:61:2F:2B","name":"",
+                "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],"manufacturer_data":{}
+            }))
+            .await;
+        let classic = wevibe_guess(&bridge, "wevibe");
+        // A Bond must never be initialised with the classic encoding.
+        assert!(!classic.guess_confirmed(Some("Bond")));
+        assert!(classic.guess_confirmed(Some("Ditto")));
+        // No name and three possible protocols: refuse to guess.
+        assert!(!classic.guess_confirmed(None));
+        let eight_bit = wevibe_guess(&bridge, "wevibe-8bit");
+        assert!(eight_bit.guess_confirmed(Some("Bond")));
+        assert!(!eight_bit.guess_confirmed(Some("Ditto")));
     }
 
     #[tokio::test]

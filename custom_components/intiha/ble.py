@@ -44,8 +44,20 @@ MAX_RETIRED_IDS = 4096
 # Never probe unknown devices, and never create a second Bluetooth connection.
 WEVIBE_SERVICE = "f000bb03-0451-4000-b000-000000000000"
 WEVIBE_INFO = "f000b000-0451-4000-b000-000000000000"
-REPORT_INTERVAL = 1.0
-REPORT_READ_TIMEOUT = 1.25
+# Status reads share one radio link (often an ESPHome proxy) with motor
+# writes. A 1 s poll with a 1.25 s timeout cancelled reads mid-flight and
+# raced output; keep it slow, back off while commands are flowing, and give
+# up on devices whose firmware does not answer with the classic frame.
+REPORT_INTERVAL = 5.0
+REPORT_READ_TIMEOUT = 4.0
+REPORT_QUIET_AFTER_WRITE = 2.0
+REPORT_MAX_INVALID_FRAMES = 3
+# Standard Bluetooth Battery Level (read-only). Upstream We-Vibe profiles
+# declare no battery sensor, so read it directly when the device exposes it.
+BATTERY_LEVEL_CHARACTERISTIC = "00002a19-0000-1000-8000-00805f9b34fb"
+BATTERY_FIRST_READ_DELAY = 8.0
+BATTERY_INTERVAL = 300.0
+BATTERY_READ_TIMEOUT = 5.0
 WEVIBE_PATTERNS = {
     0x00: "off", 0x03: "vibrate", 0x04: "peak", 0x05: "pulse",
     0x06: "echo", 0x07: "wave", 0x08: "tide", 0x0e: "surf",
@@ -114,6 +126,8 @@ class _Connection:
     stop_plan: tuple[_StopWrite, ...] = ()
     pairing_requested: bool = False
     report_task: asyncio.Task[Any] | None = None
+    battery_task: asyncio.Task[Any] | None = None
+    last_write: float = 0.0
 
 
 class BleBridge:
@@ -404,6 +418,7 @@ class BleBridge:
                         return {"data": list(data)}
                     if op == "write":
                         assert write is not None
+                        connection.last_write = self._hass.loop.time()
                         await connection.client.write_gatt_char(
                             characteristic, write.data, response=write.response
                         )
@@ -489,6 +504,7 @@ class BleBridge:
         # Start low-priority, read-only feedback only after the fresh physical
         # connection has passed its stop gate. No telemetry is part of that gate.
         self._start_device_report(connection)
+        self._start_battery_reads(connection)
         return {
             "verified": True,
             "connection_id": connection.connection_id,
@@ -538,6 +554,7 @@ class BleBridge:
         address = connection.address
         lock = self._locks.setdefault(address, asyncio.Lock())
         failure_count = 0
+        invalid_frames = 0
         reported_available = False
         last_status = None
 
@@ -561,9 +578,11 @@ class BleBridge:
             ):
                 # Transient proxy hiccups must not disable feedback forever.
                 # Backoff reduces GATT traffic after repeated failures.
-                await asyncio.sleep(REPORT_INTERVAL if failure_count < 3 else 8.0)
+                await asyncio.sleep(REPORT_INTERVAL if failure_count < 3 else 30.0)
                 if lock.locked():
                     continue  # Motor writes and STOP take priority.
+                if self._hass.loop.time() - connection.last_write < REPORT_QUIET_AFTER_WRITE:
+                    continue  # Never interleave optional reads with a command stream.
                 error_status = None
                 clear_report = False
                 async with lock:
@@ -583,6 +602,8 @@ class BleBridge:
                         raise
                     except Exception as exc:
                         failure_count += 1
+                        if isinstance(exc, ValueError):
+                            invalid_frames += 1
                         state = (
                             "read_timeout" if isinstance(exc, TimeoutError)
                             else "invalid_frame" if isinstance(exc, ValueError)
@@ -611,9 +632,17 @@ class BleBridge:
                             "type": "device_report_unavailable", "address": address,
                             "connection_id": connection.connection_id,
                         })
+                    if invalid_frames >= REPORT_MAX_INVALID_FRAMES and not reported_available:
+                        # Newer families (8-bit/Bond, Chorus) share the
+                        # characteristic but not the frame; stop polling them.
+                        await status_update(
+                            "unsupported", "Device does not report the classic status frame"
+                        )
+                        return
                     await status_update(*error_status)
                     continue
                 failure_count = 0
+                invalid_frames = 0
                 reported_available = True
                 await self._emit_safely({
                     "type": "device_report", "address": address,
@@ -633,10 +662,62 @@ class BleBridge:
 
     @staticmethod
     def _cancel_device_report(connection: _Connection) -> None:
-        task = connection.report_task
-        if task is not None and not task.done():
-            task.cancel()
+        for task in (connection.report_task, connection.battery_task):
+            if task is not None and not task.done():
+                task.cancel()
         connection.report_task = None
+        connection.battery_task = None
+
+    def _start_battery_reads(self, connection: _Connection) -> None:
+        """Read the standard Battery Level characteristic, if exposed, rarely."""
+        if connection.battery_task is not None:
+            return
+        characteristic = connection.client.services.get_characteristic(
+            BATTERY_LEVEL_CHARACTERISTIC
+        )
+        if characteristic is None or "read" not in getattr(characteristic, "properties", []):
+            return
+        connection.battery_task = self._spawn(
+            self._poll_battery(connection, characteristic), "battery level"
+        )
+
+    async def _poll_battery(self, connection: _Connection, characteristic: Any) -> None:
+        address = connection.address
+        lock = self._locks.setdefault(address, asyncio.Lock())
+        delay = BATTERY_FIRST_READ_DELAY
+        while True:
+            await asyncio.sleep(delay)
+            if (
+                not self._running
+                or self._resetting
+                or self._connections.get(address) is not connection
+                or not connection.client.is_connected
+            ):
+                return
+            if lock.locked() or (
+                self._hass.loop.time() - connection.last_write < REPORT_QUIET_AFTER_WRITE
+            ):
+                delay = 15.0  # Busy with output; try again shortly.
+                continue
+            level = None
+            async with lock:
+                if self._connections.get(address) is not connection:
+                    return
+                try:
+                    async with asyncio.timeout(BATTERY_READ_TIMEOUT):
+                        data = bytes(await connection.client.read_gatt_char(characteristic))
+                    if len(data) >= 1 and 0 <= data[0] <= 100:
+                        level = data[0]
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # Optional; never disturb the link.
+                    _LOGGER.debug("Battery read failed on %s: %s", address, exc)
+            if level is not None:
+                await self._emit_safely({
+                    "type": "battery", "address": address,
+                    "connection_id": connection.connection_id, "level": level,
+                })
+            delay = BATTERY_INTERVAL
 
     async def _connect(self, address: str, connection_id: str, epoch: int) -> dict[str, Any]:
         if address in self._closing:
@@ -752,6 +833,11 @@ class BleBridge:
                     {"type": "identity", "address": address, "name": resolved_name}
                 )
             result = self._services(connection)
+            if resolved_name:
+                # The engine uses the GATT name to confirm (or refuse) a
+                # protocol guessed from a nameless advertisement BEFORE any
+                # protocol packet is written.
+                result["name"] = resolved_name
             self._connections[address] = connection
         except BaseException as err:
             self._learn_security_requirement(address, err)

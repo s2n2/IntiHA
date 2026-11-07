@@ -70,12 +70,35 @@ fn bluetooth_vendor_short_service(uuid: &Uuid) -> Option<u16> {
     }
 }
 
+fn is_adopted_sig_service(uuid: &Uuid) -> bool {
+    let (time_low, time_mid, time_hi, node) = uuid.as_fields();
+    const BLUETOOTH_BASE_TAIL: [u8; 8] = [0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb];
+    time_low >> 16 == 0
+        && time_mid == 0
+        && time_hi == 0x1000
+        && node == &BLUETOOTH_BASE_TAIL
+        && (0x1800..=0x27ff).contains(&((time_low & 0xffff) as u16))
+}
+
+/// True when a name carries no model information (empty or just the address).
+fn identity_poor_name(name: &str, address: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case(address)
+        || valid_address(&trimmed.replace('-', ":"))
+}
+
 /// Some devices advertise only a vendor 16-bit service even though their
 /// actual GATT service is a vendor-specific 128-bit UUID. We only use this
 /// as a *candidate* bridge into Buttplug. The real GATT service and required
 /// characteristics are still checked after connection before the device is
 /// accepted.
 fn service_alias_matches(advertised: &Uuid, configured: &Uuid) -> bool {
+    if is_adopted_sig_service(advertised) {
+        // Battery, device information, etc. are shared by countless devices.
+        // Even an exact configured match is not evidence of a protocol.
+        return false;
+    }
     if advertised == configured {
         return true;
     }
@@ -169,9 +192,17 @@ pub struct Bridge {
     pub auto_reconnect: AtomicBool,
     pub external_active: AtomicBool,
     pub control_epoch: AtomicU64,
+    /// Bumped only when the external Buttplug controller must be dropped:
+    /// master off, HA bridge loss or shutdown. A single device dropping or
+    /// reconnecting is reported with DeviceRemoved/DeviceAdded instead.
+    pub client_epoch: AtomicU64,
     pub scanning: AtomicBool,
     pub reconnect_paused: AtomicBool,
     candidates: Mutex<HashMap<String, Candidate>>,
+    /// Last useful advertised name per address. Proxies often forward
+    /// advertisements without the scan-response name; never forget a name
+    /// we already learned, or the device gets matched to the wrong protocol.
+    known_names: Mutex<HashMap<String, String>>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     connecting: Mutex<HashSet<String>>,
     blocked_addresses: Mutex<HashSet<String>>,
@@ -195,9 +226,11 @@ impl Bridge {
             auto_reconnect: AtomicBool::new(true),
             external_active: AtomicBool::new(false),
             control_epoch: AtomicU64::new(0),
+            client_epoch: AtomicU64::new(0),
             scanning: AtomicBool::new(false),
             reconnect_paused: AtomicBool::new(false),
             candidates: Mutex::new(HashMap::new()),
+            known_names: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             connecting: Mutex::new(HashSet::new()),
             blocked_addresses: Mutex::new(HashSet::new()),
@@ -230,6 +263,7 @@ impl Bridge {
         drop(writer);
         self.enabled.store(false, Ordering::SeqCst);
         self.control_epoch.fetch_add(1, Ordering::SeqCst);
+        self.client_epoch.fetch_add(1, Ordering::SeqCst);
         self.scanning.store(false, Ordering::SeqCst);
         self.reconnect_paused.store(false, Ordering::SeqCst);
         *self.manual_deadline.lock().unwrap() = None;
@@ -364,6 +398,7 @@ impl Bridge {
             let enabled = value.as_bool().ok_or("enabled must be boolean")?;
             if !enabled {
                 self.control_epoch.fetch_add(1, Ordering::SeqCst);
+                self.client_epoch.fetch_add(1, Ordering::SeqCst);
             }
             self.enabled.store(enabled, Ordering::SeqCst);
         }
@@ -466,19 +501,26 @@ impl Bridge {
             return;
         }
         advertisement.address = advertisement.address.to_uppercase();
-        let specifier = advertisement.specifier();
+        {
+            let mut names = self.known_names.lock().unwrap();
+            if identity_poor_name(&advertisement.name, &advertisement.address) {
+                if let Some(name) = names.get(&advertisement.address) {
+                    advertisement.name = name.clone();
+                }
+            } else {
+                advertisement.name = advertisement.name.trim().to_owned();
+                if names.len() >= 512 && !names.contains_key(&advertisement.address) {
+                    names.clear();
+                }
+                names.insert(advertisement.address.clone(), advertisement.name.clone());
+            }
+        }
         // Keep exact matches only as optional hints (for narrow transport
         // policies such as Bond pairing). They are NOT an admission filter.
         // The official ServerDeviceManager must receive the advertisement and
         // perform its own wildcard/manufacturer/service matching, exactly as
         // it does with the normal btleplug hardware manager.
-        let protocol_hints: Vec<String> = self
-            .configuration
-            .base_communication_specifiers()
-            .iter()
-            .filter(|(_, specifiers)| specifiers.contains(&specifier))
-            .map(|(name, _)| name.clone())
-            .collect();
+        let protocol_hints = self.protocols_matching(&advertisement);
 
         // Normal advertisements go to the official matcher unchanged. For
         // nameless devices that only advertise a short vendor service UUID
@@ -488,8 +530,7 @@ impl Bridge {
         // HardwareSpecializer still requires the real service and endpoint
         // characteristics after connection before a device is admitted.
         let mut alias_matches: Vec<(String, ProtocolCommunicationSpecifier)> = Vec::new();
-        let identity_poor = advertisement.name.trim().is_empty()
-            || advertisement.name.eq_ignore_ascii_case(&advertisement.address);
+        let identity_poor = identity_poor_name(&advertisement.name, &advertisement.address);
         if protocol_hints.is_empty()
             && identity_poor
             && advertisement.manufacturer_data.is_empty()
@@ -512,6 +553,11 @@ impl Bridge {
             alias_matches.sort_by(|a, b| a.0.cmp(&b.0));
             let mut seen = HashSet::new();
             alias_matches.retain(|(protocol, _)| seen.insert(protocol.clone()));
+            // NOTE: several protocols share one GATT layout (classic We-Vibe,
+            // We-Vibe 8-bit and Chorus all use f000bb03/f000c000) and their
+            // packets are NOT interchangeable. A guessed candidate is only a
+            // reason to open the link and read the GATT device name;
+            // HaConnector refuses the guess unless that name confirms it.
         }
         {
             let mut candidates = self.candidates.lock().unwrap();
@@ -539,6 +585,57 @@ impl Bridge {
             candidate.seen = Instant::now();
             candidate.protocol_hints = protocol_hints;
             candidate.alias_matches = alias_matches;
+        }
+    }
+
+    /// Official protocol identifiers whose BLE specifier matches exactly.
+    pub fn protocols_matching(&self, advertisement: &Advertisement) -> Vec<String> {
+        let specifier = advertisement.specifier();
+        self.configuration
+            .base_communication_specifiers()
+            .iter()
+            .filter(|(_, specifiers)| specifiers.contains(&specifier))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub fn candidates_for_test(&self, address: &str) -> Vec<(String, ProtocolCommunicationSpecifier)> {
+        self.candidates
+            .lock()
+            .unwrap()
+            .get(address)
+            .map(|candidate| candidate.alias_matches.clone())
+            .unwrap_or_default()
+    }
+
+    /// Number of distinct protocols a nameless advertisement could belong to.
+    pub fn alias_candidate_count(&self, address: &str) -> usize {
+        self.candidates
+            .lock()
+            .unwrap()
+            .get(address)
+            .map_or(0, |candidate| candidate.alias_matches.len())
+    }
+
+    /// Record a name learned after connecting (GATT 0x2A00). Future
+    /// advertisements for this address are matched by name, not by guess.
+    pub fn learn_name(&self, address: &str, name: &str) {
+        if identity_poor_name(name, address) {
+            return;
+        }
+        let name = name.trim().to_owned();
+        self.known_names
+            .lock()
+            .unwrap()
+            .insert(address.to_owned(), name.clone());
+        let mut candidates = self.candidates.lock().unwrap();
+        if let Some(candidate) = candidates.get_mut(address) {
+            candidate.advertisement.name = name;
+            candidate.protocol_hints = self.protocols_matching(&candidate.advertisement);
+            if !candidate.protocol_hints.is_empty() {
+                candidate.alias_matches.clear();
+            }
         }
     }
 
@@ -1086,10 +1183,41 @@ mod tests {
         let candidates = bridge.candidates.lock().unwrap();
         let candidate = candidates.get("50:F1:4A:61:2F:2B").unwrap();
         assert!(candidate.protocol_hints.is_empty());
+        // 0xBB03 is shared by classic We-Vibe, We-Vibe 8-bit and Chorus. All
+        // are candidates; HaConnector only proceeds once the GATT name agrees.
         assert!(
-            candidate.alias_matches.iter().any(|(name, _)| name.contains("wevibe")),
-            "0xBB03 should produce at least one official We-Vibe protocol candidate"
+            candidate.alias_matches.len() > 1,
+            "0xBB03 should produce the official We-Vibe protocol candidates"
         );
+    }
+
+    #[tokio::test]
+    async fn learned_name_survives_nameless_proxy_advertisements() {
+        let bridge = discovery_bridge();
+        let address = "50:F1:4A:61:2F:2C";
+        bridge
+            .advertisement(json!({
+                "address":address.to_lowercase(),"name":"Bond",
+                "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],"manufacturer_data":{}
+            }))
+            .await;
+        for name in ["", address, "50-F1-4A-61-2F-2C"] {
+            bridge
+                .advertisement(json!({
+                    "address":address,"name":name,
+                    "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],"manufacturer_data":{}
+                }))
+                .await;
+            let candidates = bridge.candidates.lock().unwrap();
+            let candidate = &candidates[address];
+            assert_eq!(candidate.advertisement.name, "Bond");
+            assert!(
+                candidate.protocol_hints.iter().any(|p| p == "wevibe-8bit"),
+                "Bond must keep matching the 8-bit protocol, got {:?}",
+                candidate.protocol_hints
+            );
+            assert!(candidate.alias_matches.is_empty());
+        }
     }
 
     #[tokio::test]

@@ -1020,6 +1020,18 @@ class IntiHACoordinator:
         if kind == "device_report":
             self._update_device_report(message)
             return  # Local BLE feedback is never forwarded to the public server.
+        if kind == "battery":
+            device = self.devices.get(address)
+            level = message.get("level")
+            if (
+                device is not None
+                and device.connection_id == message.get("connection_id")
+                and isinstance(level, int)
+                and 0 <= level <= 100
+            ):
+                device.battery = level
+                self._notify()
+            return  # Private BLE-only reading; never forwarded to Buttplug.
         if kind == "device_report_unavailable":
             device = self.devices.get(address)
             if device is not None and device.connection_id == message.get("connection_id"):

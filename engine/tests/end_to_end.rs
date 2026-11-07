@@ -143,6 +143,12 @@ impl Harness {
                                         if let Some(plan)=stop_plans.remove(value["connection_id"].as_str().unwrap()) { captured.lock().unwrap().extend(plan); }
                                         json!({})
                                     }
+                                    "stop" => {
+                                        // Cached-stop fallback: replay the verified plan in place.
+                                        let id = value["connection_id"].as_str().unwrap();
+                                        if let Some(plan) = stop_plans.get(id) { captured.lock().unwrap().extend(plan.clone()); }
+                                        json!({"verified":true,"connection_id":id})
+                                    }
                                     "scan"|"subscribe"|"unsubscribe" => json!({}),
                                     other => panic!("Unexpected operation {other}"),
                                 };
@@ -406,6 +412,63 @@ async fn external_v3_client_can_drive_existing_proxy_device_and_release_it_witho
     h.finish().await;
 }
 
+
+/// Regression: IntiHA used to stop devices by writing a cached packet behind
+/// the official driver's back. The driver's last-command cache still held the
+/// old level, so the next identical ScalarCmd (every repeated pulse, and every
+/// pattern that dips to zero) was silently skipped and the device stayed off.
+#[tokio::test]
+async fn repeated_pulse_after_external_stop_reaches_the_device_again() {
+    let h = Harness::start().await;
+    let device = h.ready().await;
+    let index = device["DeviceIndex"].clone();
+    let (mut socket, _) = connect_async(&h.client_url).await.unwrap();
+    macro_rules! request {
+        ($message:expr) => {{
+            socket.send(Message::Text(json!([$message]).to_string().into())).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    match socket.next().await.unwrap().unwrap() {
+                        Message::Text(t) => {
+                            let value = serde_json::from_str::<Value>(&t).unwrap();
+                            if value[0].get("Ok").is_some() || value[0].get("ServerInfo").is_some() {
+                                break value;
+                            }
+                            if value[0].get("Error").is_some() { panic!("request failed: {value}"); }
+                        }
+                        Message::Ping(v) => socket.send(Message::Pong(v)).await.unwrap(),
+                        _ => {}
+                    }
+                }
+            }).await.expect("response")
+        }};
+    }
+    let on = |id: u32| json!({"ScalarCmd":{"Id":id,"DeviceIndex":index,"Scalars":[{"Index":0,"Scalar":0.5,"ActuatorType":"Vibrate"}]}});
+    let stop = json!([15, 0, 0, 0, 0, 0, 0, 0]);
+    let wait_for_output = |after: usize| {
+        let writes = h.writes.clone();
+        let stop = stop.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if writes.lock().unwrap()[after..].iter().any(|w| w["data"] != stop) { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.is_ok()
+        }
+    };
+    request!(json!({"RequestServerInfo":{"Id":1,"ClientName":"Pulse repeat test","MessageVersion":3}}));
+    for round in 0..3u32 {
+        let before = h.writes.lock().unwrap().len();
+        request!(on(10 + round * 2));
+        assert!(wait_for_output(before).await, "pulse {round} never reached GATT");
+        request!(json!({"StopDeviceCmd":{"Id":11 + round * 2,"DeviceIndex":index}}));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(h.writes.lock().unwrap().last().unwrap()["data"], stop, "pulse {round} was not stopped");
+    }
+    socket.close(None).await.unwrap();
+    h.finish().await;
+}
 
 #[tokio::test]
 async fn external_stop_is_a_barrier_and_cannot_bounce_back_to_previous_output() {

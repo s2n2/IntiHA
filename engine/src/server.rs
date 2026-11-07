@@ -132,7 +132,45 @@ impl App {
             .route("/", get(client_upgrade))
             .route("/buttplug", get(client_upgrade))
             .route("/health", get(health))
+            .route("/intiha/devices", get(device_identities))
             .with_state(self.clone())
+    }
+
+    /// Stable physical identity for each current Buttplug DeviceIndex.
+    ///
+    /// Buttplug messages must stay schema-exact (extra DeviceList fields broke
+    /// strict clients in b16), so clients that want to de-duplicate devices
+    /// across servers/reconnects read this side channel instead.
+    pub async fn device_identities(&self) -> Value {
+        let list = self
+            .v3(json!({"RequestDeviceList":{"Id":1}}))
+            .await
+            .unwrap_or(Value::Null);
+        let devices: Vec<Value> = list["DeviceList"]["Devices"]
+            .as_array()
+            .map(|devices| {
+                devices
+                    .iter()
+                    .filter_map(|device| {
+                        let index = u32::try_from(device["DeviceIndex"].as_u64()?).ok()?;
+                        let info = self.manager.device_info(index)?;
+                        let address = info.identifier().address().clone();
+                        let ready = self
+                            .bridge
+                            .session_for(&address)
+                            .is_some_and(|s| s.ready.load(Ordering::SeqCst));
+                        Some(json!({
+                            "DeviceIndex": index,
+                            "DeviceName": device["DeviceName"],
+                            "DeviceDisplayName": device.get("DeviceDisplayName").cloned().unwrap_or(Value::Null),
+                            "address": address,
+                            "ready": ready,
+                        }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        json!({"version": VERSION, "devices": devices})
     }
     pub fn bridge_router(self: &Arc<Self>) -> Router {
         Router::new()
@@ -278,19 +316,39 @@ impl App {
         Ok(())
     }
 
-    async fn stop_device(&self, index: u32) -> Result<(), String> {
-        let info = self
-            .manager
-            .device_info(index)
-            .ok_or("Device is not connected")?;
-        let session = self
-            .bridge
-            .session_for(info.identifier().address())
-            .ok_or("Device has no live Bluetooth session")?;
-        self.bridge
-            .disconnect_session(&session)
-            .await
-            .map_err(|e| e.to_string())
+    /// Stop through the official driver (management server), keeping the BLE
+    /// link. Falls back to the verified cached stop if the driver path fails.
+    async fn soft_stop(&self, index: Option<u32>) -> Result<(), String> {
+        let message = match index {
+            Some(index) => json!({"StopDeviceCmd":{"Id":1,"DeviceIndex":index}}),
+            None => json!({"StopAllDevices":{"Id":1}}),
+        };
+        let upstream = tokio::time::timeout(Duration::from_secs(6), self.v3(message)).await;
+        self.finish_driver_stop(index, matches!(upstream, Ok(Ok(_)))).await
+    }
+
+    /// Complete a stop that was first offered to the official driver.
+    async fn finish_driver_stop(&self, index: Option<u32>, driver_ok: bool) -> Result<(), String> {
+        if index.is_none() {
+            *self.bridge.manual_deadline.lock().unwrap() = None;
+        }
+        if !driver_ok {
+            tracing::warn!(?index, "Driver stop failed; sending cached stop writes");
+            return match index {
+                Some(index) => self.stop_device_output(index).await,
+                None => self.stop_outputs().await,
+            };
+        }
+        let clear = match index {
+            None => Some(json!({"type":"output_clear"})),
+            Some(index) => self.manager.device_info(index).map(|info| {
+                json!({"type":"output_clear","address":info.identifier().address()})
+            }),
+        };
+        if let Some(clear) = clear {
+            let _ = self.bridge.send(clear).await;
+        }
+        Ok(())
     }
 
     /// Buttplug StopDevice semantics are an actuator stop, not a request to
@@ -349,7 +407,9 @@ impl App {
                 Ok(self.bridge.status())
             }
             "stop" => {
-                self.stop_all().await?;
+                // A stop is not a disconnect. Tearing every link down made
+                // each Stop force a full proxy reconnect and re-pairing.
+                self.soft_stop(None).await?;
                 Ok(json!({}))
             }
             "status" => {
@@ -417,11 +477,11 @@ impl App {
                 }
                 let stopped_index = message[name]["DeviceIndex"].as_u64().map(|v| v as u32);
                 if name == "StopAllDevices" {
-                    self.stop_all().await?;
+                    self.soft_stop(None).await?;
                     return Ok(json!({"message":{"Ok":{"Id":message[name]["Id"]}}}));
                 }
                 if name == "StopDeviceCmd" {
-                    self.stop_device(stopped_index.ok_or("Missing device index")?)
+                    self.soft_stop(Some(stopped_index.ok_or("Missing device index")?))
                         .await?;
                     return Ok(json!({"message":{"Ok":{"Id":message[name]["Id"]}}}));
                 }
@@ -724,7 +784,7 @@ impl App {
                     .unwrap()
                     .is_some_and(|deadline| deadline <= Instant::now())
                 {
-                    let _ = self.stop_all().await;
+                    let _ = self.soft_stop(None).await;
                 }
             }
         }
@@ -760,6 +820,7 @@ impl App {
         self.stopping.store(true, Ordering::SeqCst);
         self.bridge.enabled.store(false, Ordering::SeqCst);
         self.bridge.control_epoch.fetch_add(1, Ordering::SeqCst);
+        self.bridge.client_epoch.fetch_add(1, Ordering::SeqCst);
         // Supervisor updates must never wait forever behind a wedged BLE/admin
         // operation. Give graceful cleanup a bounded window; process teardown
         // will retire any remaining sockets/tasks afterwards.
@@ -850,6 +911,13 @@ async fn health(State(app): State<Arc<App>>) -> Json<Value> {
         "server_enabled":client_server_available(&app)
     }))
 }
+async fn device_identities(State(app): State<Arc<App>>) -> Response {
+    if !client_server_available(&app) {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    Json(app.device_identities().await).into_response()
+}
+
 async fn bridge_upgrade(State(app): State<Arc<App>>, ws: WebSocketUpgrade) -> Response {
     if app.stopping.load(Ordering::SeqCst) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -997,7 +1065,10 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
     // A TCP/WebSocket connection is not yet a controller. Do not revoke HA
     // ownership until the Buttplug handshake has actually completed.
     let mut owns_control = false;
-    let mut control_epoch = app.bridge.control_epoch.load(Ordering::SeqCst);
+    // Only master off, bridge loss and shutdown end the controller session.
+    // Individual devices dropping/reconnecting arrive as DeviceRemoved and
+    // DeviceAdded events, exactly as with Intiface Central.
+    let client_epoch = app.bridge.client_epoch.load(Ordering::SeqCst);
     let Ok(server) = ButtplugServerBuilder::with_shared_device_manager(app.manager.clone())
         .name("IntiHA")
         .max_ping_time(20_000)
@@ -1014,7 +1085,7 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
     loop {
         tokio::select! {
             message = socket.recv() => {
-                if app.bridge.control_epoch.load(Ordering::SeqCst) != control_epoch { break; }
+                if app.bridge.client_epoch.load(Ordering::SeqCst) != client_epoch { break; }
                 let Some(Ok(message)) = message else { break; }; last_seen = Instant::now();
                 match message {
                     Message::Text(text) => {
@@ -1025,7 +1096,7 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                         if messages.len() > 32 { break; }
                         for message in messages {
                             let _guard = app.admin_lock.lock().await;
-                            if app.bridge.control_epoch.load(Ordering::SeqCst) != control_epoch { break; }
+                            if app.bridge.client_epoch.load(Ordering::SeqCst) != client_epoch { break; }
                             let id = message.id();
                             if let Err(error) = external_policy(&app, &message) {
                                 if !bounded_send(&mut socket, error_message(id,&error)).await { break; }
@@ -1036,9 +1107,15 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                                     let stop_name = ["StopAllDevices", "StopDeviceCmd", "StopCmd"].into_iter().find(|name| value.get(*name).is_some());
                                     if let Some(name) = stop_name
                                         && (name != "StopCmd" || value[name]["Outputs"].as_bool().unwrap_or(true)) {
-                                            let result = if let Some(index) = value[name]["DeviceIndex"].as_u64() {
-                                                app.stop_device_output(index as u32).await
-                                            } else { app.stop_outputs().await };
+                                            let index = value[name]["DeviceIndex"].as_u64().and_then(|i| u32::try_from(i).ok());
+                                            // The official driver must see the stop. Writing a cached
+                                            // stop behind its back leaves its last-command cache at the
+                                            // old level, so the next identical command (every repeated
+                                            // pulse) would be silently skipped.
+                                            let upstream = tokio::time::timeout(
+                                                Duration::from_secs(6), server.parse_message(message),
+                                            ).await;
+                                            let result = app.finish_driver_stop(index, matches!(upstream, Ok(Ok(_)))).await;
                                             let response = match result {
                                                 Ok(()) => Message::Text(json!([{"Ok":{"Id":id}}]).to_string().into()),
                                                 Err(error) => error_message(id,&format!("Stop could not be confirmed: {error}")),
@@ -1072,7 +1149,6 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                                 }
                                 app.bridge.external_active.store(true, Ordering::SeqCst);
                                 owns_control = true;
-                                control_epoch = app.bridge.control_epoch.load(Ordering::SeqCst);
                                 let _ = app.bridge.send(app.bridge.status()).await;
                             }
                             if succeeded {
@@ -1098,7 +1174,7 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                     && !bounded_send(&mut socket, Message::Text(text.into())).await { break; }
             }
             _ = heartbeat.tick() => {
-                if app.bridge.control_epoch.load(Ordering::SeqCst) != control_epoch { break; }
+                if app.bridge.client_epoch.load(Ordering::SeqCst) != client_epoch { break; }
                 if (!server.connected() && started.elapsed() > Duration::from_secs(10)) || last_seen.elapsed() > Duration::from_secs(30) { break; }
                 if !bounded_send(&mut socket, Message::Ping(Vec::new().into())).await { break; }
             }
