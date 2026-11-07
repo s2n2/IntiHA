@@ -76,6 +76,31 @@ impl HaConnector {
     }
 }
 impl HaConnector {
+    /// The official identifier picks the model (e.g. "WeVibe Jive" rather than
+    /// the protocol default "WeVibe Device") from the hardware name, which must
+    /// be one of the configured BLE names. Prefer whichever of the advertised
+    /// and GATT names is such a name; a display/alias name (e.g. "We-Vibe
+    /// C5:1E") would silently fall back to the generic default.
+    fn hardware_name(&self, gatt_name: Option<&str>) -> String {
+        let advertised = self.advertisement.name.trim();
+        let candidates = [Some(advertised), gatt_name.map(str::trim)];
+        for candidate in candidates.into_iter().flatten() {
+            if candidate.is_empty() {
+                continue;
+            }
+            let mut advertisement = self.advertisement.clone();
+            advertisement.name = candidate.to_owned();
+            if !self.bridge.protocols_matching(&advertisement).is_empty() {
+                return candidate.to_owned();
+            }
+        }
+        if advertised.is_empty() {
+            gatt_name.map(|n| n.trim().to_owned()).unwrap_or_default()
+        } else {
+            advertised.to_owned()
+        }
+    }
+
     /// A guessed (alias) protocol may proceed only when the device's own
     /// name maps to that same protocol, or when the name is unknown to the
     /// device configuration and the service maps to exactly one protocol.
@@ -241,13 +266,16 @@ impl HardwareConnector for HaConnector {
         // The official identifier picks the model (e.g. "WeVibe Jive" rather
         // than the protocol default "WeVibe Device") from the hardware name.
         // A nameless advertisement must therefore use the GATT name.
-        let name = result
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty() && self.advertisement.name.trim().is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| self.advertisement.name.clone());
+        let name = self.hardware_name(result.name.as_deref());
+        tracing::info!(
+            address = %address,
+            advertised = %self.advertisement.name,
+            gatt_name = ?result.name,
+            hardware_name = %name,
+            protocols = ?self.protocol_hints,
+            guessed = self.match_specifier.is_some(),
+            "Identifying device"
+        );
         Ok(Box::new(HaSpecializer {
             bridge: self.bridge.clone(),
             session,
@@ -630,6 +658,34 @@ mod tests {
             vec![protocol.to_owned()],
             Some(specifier),
         )
+    }
+
+    #[test]
+    fn hardware_name_prefers_a_configured_model_name() {
+        let bridge = Bridge::new(Arc::new(
+            buttplug_server_device_config::load_protocol_configs(&None, &None, false)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ));
+        let connector = |advertised: &str| {
+            HaConnector::new(
+                bridge.clone(),
+                serde_json::from_value(json!({
+                    "address":"10:CE:A9:38:C5:1E","name":advertised,
+                    "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],
+                    "manufacturer_data":{},"rssi":null,"source":null
+                }))
+                .unwrap(),
+                vec!["wevibe".to_owned()],
+                None,
+            )
+        };
+        assert_eq!(connector("We-Vibe C5:1E").hardware_name(Some("Jive")), "Jive");
+        assert_eq!(connector("").hardware_name(Some("Ditto")), "Ditto");
+        assert_eq!(connector("Bond").hardware_name(None), "Bond");
+        assert_eq!(connector("Bond").hardware_name(Some("Something else")), "Bond");
+        assert_eq!(connector("").hardware_name(None), "");
     }
 
     #[tokio::test]

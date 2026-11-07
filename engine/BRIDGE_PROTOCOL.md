@@ -12,7 +12,7 @@ HA first sends:
 {"type":"hello","protocol":1,"enabled":true,"auto_reconnect":true,"manual_timeout_seconds":60,"blocked_addresses":[]}
 ```
 
-The engine replies `{"type":"hello","protocol":1,"version":"0.3.0b22"}`.
+The engine replies `{"type":"hello","protocol":1,"version":"0.3.0b23"}`.
 The socket establishes a new generation; previous pending RPCs and BLE sessions
 must never survive it. `connection_id` is a new UUID for each physical connect.
 The address is uppercase. No command is replayed after reconnection.

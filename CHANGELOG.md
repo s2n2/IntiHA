@@ -1,3 +1,8 @@
+## engine 0.3.0b23 - Model names from GATT
+
+- The hardware name given to Buttplug is whichever of the advertised and GATT names is a configured model name, so a device advertising an alias (e.g. "We-Vibe C5:1E") still identifies as its model (e.g. WeVibe Jive) instead of the generic WeVibe Device.
+- Each connection logs one INFO line with the advertised name, GATT name, chosen hardware name and protocol hints.
+
 ## 0.3.0b24 - Feedback and battery diagnostics
 
 - When a device's status characteristic returns something other than the classic We-Vibe frame, the raw bytes are shown in **Device feedback status** and logged once, and polling stops with status `unsupported` (previously overwritten by "session ended").
