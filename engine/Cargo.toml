@@ -1,6 +1,6 @@
 [package]
 name = "intiha-engine"
-version = "0.3.0-b21"
+version = "0.3.0-b22"
 edition = "2024"
 rust-version = "1.99"
 license = "BSD-3-Clause"

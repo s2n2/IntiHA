@@ -238,10 +238,20 @@ impl HardwareConnector for HaConnector {
         self.bridge
             .device_status(address, &id, "initialising", None)
             .await;
+        // The official identifier picks the model (e.g. "WeVibe Jive" rather
+        // than the protocol default "WeVibe Device") from the hardware name.
+        // A nameless advertisement must therefore use the GATT name.
+        let name = result
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && self.advertisement.name.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.advertisement.name.clone());
         Ok(Box::new(HaSpecializer {
             bridge: self.bridge.clone(),
             session,
-            name: self.advertisement.name.clone(),
+            name,
             services: result.services,
         }))
     }
