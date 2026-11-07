@@ -496,17 +496,37 @@ class BleBridge:
         }
 
     def _start_device_report(self, connection: _Connection) -> None:
+        """Probe ONLY the documented read-only We-Vibe status characteristic.
+
+        A compatible Buttplug device is not necessarily a classic We-Vibe
+        device. Explicitly distinguish unsupported GATT profiles from read
+        errors; never send a control packet to discover a feedback channel.
+        """
         if connection.report_task is not None:
             return
         services = connection.client.services
-        if not any(str(service.uuid).lower() == WEVIBE_SERVICE for service in services):
-            return
+        # The exact characteristic UUID is more reliable than requiring the
+        # entire advertised service collection. It is vendor-specific.
         characteristic = services.get_characteristic(WEVIBE_INFO)
-        if characteristic is None or "read" not in getattr(characteristic, "properties", []):
+        if characteristic is None:
+            status = "unsupported"
+            detail = "Classic We-Vibe readable status characteristic not exposed"
+        elif "read" not in getattr(characteristic, "properties", []):
+            status = "not_readable"
+            detail = "Status characteristic does not permit BLE reads"
+        else:
+            connection.report_task = self._spawn(
+                self._poll_device_report(connection, characteristic),
+                "We-Vibe device reported intensity",
+            )
             return
-        connection.report_task = self._spawn(
-            self._poll_device_report(connection, characteristic),
-            "We-Vibe device reported intensity",
+        self._spawn(
+            self._emit_safely({
+                "type": "device_report_status", "address": connection.address,
+                "connection_id": connection.connection_id,
+                "status": status, "detail": detail,
+            }),
+            "We-Vibe feedback capability",
         )
 
     async def _poll_device_report(self, connection: _Connection, characteristic: Any) -> None:
@@ -519,16 +539,33 @@ class BleBridge:
         lock = self._locks.setdefault(address, asyncio.Lock())
         failure_count = 0
         reported_available = False
+        last_status = None
+
+        async def status_update(state: str, detail: str) -> None:
+            nonlocal last_status
+            if state != last_status:
+                last_status = state
+                await self._emit_safely({
+                    "type": "device_report_status", "address": address,
+                    "connection_id": connection.connection_id,
+                    "status": state, "detail": detail,
+                })
+
         try:
+            await status_update("waiting", "Waiting for first valid We-Vibe status read")
             while (
                 self._running
                 and not self._resetting
                 and self._connections.get(address) is connection
                 and connection.client.is_connected
             ):
-                await asyncio.sleep(REPORT_INTERVAL)
+                # Transient proxy hiccups must not disable feedback forever.
+                # Backoff reduces GATT traffic after repeated failures.
+                await asyncio.sleep(REPORT_INTERVAL if failure_count < 3 else 8.0)
                 if lock.locked():
                     continue  # Motor writes and STOP take priority.
+                error_status = None
+                clear_report = False
                 async with lock:
                     if (
                         self._connections.get(address) is not connection
@@ -541,30 +578,49 @@ class BleBridge:
                             data = bytes(await connection.client.read_gatt_char(characteristic))
                         decoded = decode_wevibe_info(data)
                         if decoded is None:
-                            raise ValueError("Invalid We-Vibe info frame")
+                            raise ValueError("Invalid 8-byte We-Vibe info frame")
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
                         failure_count += 1
-                        if reported_available:
+                        state = (
+                            "read_timeout" if isinstance(exc, TimeoutError)
+                            else "invalid_frame" if isinstance(exc, ValueError)
+                            else "read_error"
+                        )
+                        detail = (
+                            "BLE info read timed out; retrying"
+                            if state == "read_timeout" else
+                            "Device returned an unrecognised status frame; retrying"
+                            if state == "invalid_frame" else
+                            "Bluetooth status read failed; retrying"
+                        )
+                        # Two missed samples make the live trace stale. A single
+                        # missed GATT read shouldn't flicker a valid sensor.
+                        if reported_available and failure_count >= 2:
                             reported_available = False
-                            self._spawn(self._emit_safely({
-                                "type": "device_report_unavailable",
-                                "address": address,
-                                "connection_id": connection.connection_id,
-                            }), "optional report unavailable")
-                        if failure_count >= 3:
-                            _LOGGER.debug("Stopping optional We-Vibe reads on %s: %s", address, exc)
-                            break
-                        continue
+                            clear_report = True
+                        # Never emit over the private bridge while holding
+                        # the BLE command lock: STOP must never wait behind a
+                        # diagnostic event or a blocked telemetry queue.
+                        error_status = (state, detail)
+                        _LOGGER.debug("Optional feedback read failed on %s (%s): %s", address, state, exc)
+                if error_status is not None:
+                    if clear_report:
+                        await self._emit_safely({
+                            "type": "device_report_unavailable", "address": address,
+                            "connection_id": connection.connection_id,
+                        })
+                    await status_update(*error_status)
+                    continue
                 failure_count = 0
                 reported_available = True
                 await self._emit_safely({
-                    "type": "device_report",
-                    "address": address,
+                    "type": "device_report", "address": address,
                     "connection_id": connection.connection_id,
                     **decoded,
                 })
+                await status_update("available", "Device-reported settings received")
         except asyncio.CancelledError:
             raise
         finally:
@@ -573,6 +629,7 @@ class BleBridge:
                 "type": "device_report_unavailable", "address": address,
                 "connection_id": connection.connection_id,
             })
+            await status_update("disconnected", "Bluetooth status read session ended")
 
     @staticmethod
     def _cancel_device_report(connection: _Connection) -> None:

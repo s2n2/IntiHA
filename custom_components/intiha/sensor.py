@@ -39,6 +39,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 "intensity",
                 "reported_intensity",
                 "reported_pattern",
+                "feedback_status",
                 "battery",
                 "signal_strength",
                 "last_seen_via",
@@ -59,6 +60,14 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
             self._attr_icon = "mdi:vibrate"
             self._attr_native_unit_of_measurement = PERCENTAGE
             self._attr_suggested_display_precision = 0
+        elif key == "feedback_status":
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+            self._attr_icon = "mdi:bluetooth-audio"
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = [
+                "disconnected", "waiting", "available", "unsupported",
+                "not_readable", "read_timeout", "read_error", "invalid_frame",
+            ]
         elif key == "reported_pattern":
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
             self._attr_icon = "mdi:waveform"
@@ -91,7 +100,7 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        if self.address and self.key in ("intensity", "reported_intensity", "reported_pattern"):
+        if self.address and self.key in ("intensity", "reported_intensity", "reported_pattern", "feedback_status"):
             self.async_on_remove(
                 self.coordinator.add_intensity_listener(
                     self.address, self.async_write_ha_state
@@ -125,6 +134,7 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                 "intensity": max(device.outputs.values(), default=0),
                 "reported_intensity": device.reported_intensity,
                 "reported_pattern": device.reported_pattern,
+                "feedback_status": device.feedback_status,
                 "battery": device.battery,
                 "signal_strength": device.rssi,
                 "last_seen_via": device.source,
@@ -165,6 +175,14 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                 "pattern_code": device.reported_pattern_code,
                 "last_read": device.reported_at.isoformat() if device.reported_at else None,
                 "sensor_source": "wevibe_info_characteristic",
+            }
+        if self.address and self.key == "feedback_status":
+            device = self.coordinator.devices[self.address]
+            return {
+                "detail": device.feedback_detail,
+                "device_profile": device.protocols,
+                "last_successful_read": device.reported_at.isoformat() if device.reported_at else None,
+                "commanded_intensity_is_available_separately": True,
             }
         if self.address and self.key == "device_status":
             device = self.coordinator.devices[self.address]

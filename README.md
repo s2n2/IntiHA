@@ -446,3 +446,7 @@ These sensors can generate frequent Home Assistant history writes. Consider excl
 ### Device-reported We-Vibe feedback (b19)
 
 For classic We-Vibe devices exposing the documented `f000b000-0451-4000-b000-000000000000` readable GATT characteristic, IntiHA adds **Device-reported intensity** and **Device-reported pattern** sensors. Feedback is read via the existing proxy connection only after the STOP safety gate is verified, approximately once per second. It is firmware-reported intensity settings, *not* a physical vibration sensor or guaranteed STOP verification. Unsupported device protocols have unavailable feedback sensors. The public Buttplug protocol is unchanged. Optional reads stop after repeated errors rather than jeopardising the active connection.
+
+### Feedback troubleshooting (b20)
+
+Use the per-device **Device feedback status** diagnostic alongside **Device-reported intensity**. `unsupported` means the device does not expose the documented classic We-Vibe readable status characteristic; it cannot provide physical feedback through this protocol. `read_timeout`, `read_error`, and `invalid_frame` indicate a detectable characteristic whose readings are failing. These are optional reads and do not affect the verified STOP gate or motor control. The intensity sensor remains unavailable when readings are not valid.

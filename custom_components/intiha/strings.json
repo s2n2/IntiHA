@@ -182,6 +182,9 @@
       },
       "reported_pattern": {
         "name": "Device-reported pattern"
+      },
+      "feedback_status": {
+        "name": "Device feedback status"
       }
     }
   },

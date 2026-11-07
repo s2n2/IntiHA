@@ -1,4 +1,12 @@
-## 0.3.0b19 - Optional classic We-Vibe device feedback
+## v0.3.0b20 — Feedback diagnostics and resilient reads
+
+- Added a per-device **Device feedback status** diagnostic sensor to explain unsupported GATT profiles, unreadable status characteristics, read timeouts and malformed frames.
+- Compatible classic We-Vibe information characteristics are discovered by their exact UUID; existing connection and STOP checks are unchanged.
+- Optional BLE feedback reads retry on an 8-second backoff after repeated failures instead of becoming permanently disabled after three timeouts.
+- Hardware feedback is never fabricated: unsupported devices correctly show reported intensity as unavailable.
+- The public Buttplug protocol and command-side STOP safeguards are unchanged.
+
+## 0.3.0b20 - Optional classic We-Vibe device feedback
 - Poll the documented 8-byte We-Vibe GATT info characteristic over the *existing* Home Assistant BLE client, only after a verified STOP and only when the correct service and read property are present.
 - Add **Device-reported intensity** (0-100%) and **Device-reported pattern** per supported device. Each reading includes internal/external motor settings, timestamp, and Bluetooth address.
 - Poll at about one read per second; skip reads while a control operation owns the BLE lock, bound each read to 1.25s, and stop telemetry on repeated read failures. Never disconnect or alter output solely because optional telemetry fails.

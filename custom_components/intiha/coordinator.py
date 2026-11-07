@@ -128,6 +128,8 @@ class DeviceState:
     reported_pattern: str | None = None
     reported_pattern_code: int | None = None
     reported_at: datetime | None = None
+    feedback_status: str = "disconnected"
+    feedback_detail: str | None = None
     error: str | None = None
     phase: str = "offline"
     pairing_required: bool = False
@@ -166,6 +168,8 @@ class IntiHACoordinator:
         self._uncertain_addresses: set[str] = set()
         self.discovered: dict[str, dict[str, Any]] = {}
         self.devices: dict[str, DeviceState] = {}
+        # Status can arrive just before the engine's first ready inventory.
+        self._feedback_pending: dict[tuple[str, str], tuple[str, str]] = {}
         self._listeners: set[Callable[[], None]] = set()
         self._intensity_listeners: dict[str, set[Callable[[], None]]] = {}
         self._request_tasks: set[asyncio.Task] = set()
@@ -760,6 +764,38 @@ class IntiHACoordinator:
         device.reported_pattern_code = None
         device.reported_at = None
 
+    def _update_feedback_status(self, message: dict[str, Any]) -> None:
+        """Keep optional BLE feedback diagnostics on the right session."""
+        address = str(message.get("address", "")).upper()
+        session = message.get("connection_id")
+        state = message.get("status")
+        detail = message.get("detail")
+        accepted = {
+            "waiting", "available", "unsupported", "not_readable",
+            "read_timeout", "read_error", "invalid_frame", "disconnected",
+        }
+        if (
+            not isinstance(session, str) or not 1 <= len(session) <= 128
+            or not isinstance(state, str) or state not in accepted
+            or not isinstance(detail, str)
+        ):
+            return
+        device = self.devices.get(address)
+        if device is None:
+            return
+        safe_detail = detail[:160]
+        if device.connection_id == session and device.connected:
+            device.feedback_status = state
+            device.feedback_detail = safe_detail
+            self._notify_intensity(address)
+        elif self.enabled and self.engine_connected:
+            # The BLE bridge can finish the verified STOP gate before the
+            # engine publishes its ready inventory. Keep only a small, bounded
+            # status queue. Never apply it to a different session.
+            if len(self._feedback_pending) >= 64:
+                self._feedback_pending.pop(next(iter(self._feedback_pending)))
+            self._feedback_pending[(address, session)] = (state, safe_detail)
+
     def _update_device_report(self, message: dict[str, Any]) -> None:
         """Use only reads from the currently authorised BLE generation."""
         address = str(message.get("address", "")).upper()
@@ -856,6 +892,8 @@ class IntiHACoordinator:
             if new_connection:
                 device.outputs.clear()
                 self._clear_reported(device)
+                device.feedback_status = "disconnected"
+                device.feedback_detail = "Bluetooth device not connected"
                 device.battery = None
             if description.get("ready") is True:
                 connected.add(address)
@@ -877,10 +915,18 @@ class IntiHACoordinator:
                 else:
                     device.name = _fallback_name(address, device.protocols, engine_name)
                     self._schedule_name_resolution(address)
+            previous_session = device.connection_id
             device.index = index
             device.connection_id = connection_id
             device.connected = description.get("ready") is True
             if device.connected:
+                if previous_session != connection_id:
+                    self._clear_reported(device)
+                    device.feedback_status = "waiting"
+                    device.feedback_detail = "Awaiting BLE feedback capability check"
+                pending = self._feedback_pending.pop((address, connection_id), None)
+                if pending is not None:
+                    device.feedback_status, device.feedback_detail = pending
                 device.phase = "ready"
                 device.error = None
             # A routine inventory refresh must not erase a useful failure.
@@ -968,6 +1014,9 @@ class IntiHACoordinator:
     async def _async_ble_event(self, message: dict[str, Any]) -> None:
         kind = message.get("type")
         address = str(message.get("address", "")).upper()
+        if kind == "device_report_status":
+            self._update_feedback_status(message)
+            return  # Private BLE-only diagnostic; never forwarded to Buttplug.
         if kind == "device_report":
             self._update_device_report(message)
             return  # Local BLE feedback is never forwarded to the public server.
@@ -1020,6 +1069,8 @@ class IntiHACoordinator:
                     device.connection_id = None
                     device.outputs.clear()
                     self._clear_reported(device)
+                    device.feedback_status = "disconnected"
+                    device.feedback_detail = "Bluetooth device disconnected"
                     self._notify_intensity(address)
                     device.battery = None
                     self._notify()
@@ -1039,11 +1090,15 @@ class IntiHACoordinator:
                 await self.bridge.send(message, epoch=self.bridge.epoch)
 
     def _clear_devices(self) -> None:
+        self._feedback_pending.clear()
         for device in self.devices.values():
             device.connected = False
             device.index = None
             device.connection_id = None
             device.outputs.clear()
+            self._clear_reported(device)
+            device.feedback_status = "disconnected"
+            device.feedback_detail = "Engine disconnected"
             device.battery = None
 
     async def _async_disconnected(self, reason: str) -> None:
