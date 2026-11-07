@@ -1,3 +1,10 @@
+## 0.3.0b19 - Optional classic We-Vibe device feedback
+- Poll the documented 8-byte We-Vibe GATT info characteristic over the *existing* Home Assistant BLE client, only after a verified STOP and only when the correct service and read property are present.
+- Add **Device-reported intensity** (0-100%) and **Device-reported pattern** per supported device. Each reading includes internal/external motor settings, timestamp, and Bluetooth address.
+- Poll at about one read per second; skip reads while a control operation owns the BLE lock, bound each read to 1.25s, and stop telemetry on repeated read failures. Never disconnect or alter output solely because optional telemetry fails.
+- Unavailable means no fresh device feedback. Commanded intensity remains separate. This reads device firmware settings, not physical motor motion; unsupported hardware is never guessed.
+- Do not change external Buttplug messages, STOP verification, engine control, or Ogg's command/watchdog path.
+
 ## 0.3.0b18 - per-device commanded vibration intensity sensors
 - Add a per-device **Commanded intensity** sensor (0-100%) using the highest vibration actuator command; multi-motor values are also available in `vibration_channels` attributes.
 - Capture accepted ScalarCmd, VibrateCmd and SingleMotorVibrateCmd commands from external clients (including Ogg) using a **private engine-to-Home-Assistant bridge event**. Public Buttplug v3 DeviceList, handshake, command results and events remain unchanged.

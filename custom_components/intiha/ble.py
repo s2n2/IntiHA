@@ -40,6 +40,43 @@ MAX_STOP_WRITES = 16
 MAX_CONNECTIONS = 32
 MAX_EVENTS = 256
 MAX_RETIRED_IDS = 4096
+# Classic We-Vibe status: one read-only, 8-byte GATT characteristic.
+# Never probe unknown devices, and never create a second Bluetooth connection.
+WEVIBE_SERVICE = "f000bb03-0451-4000-b000-000000000000"
+WEVIBE_INFO = "f000b000-0451-4000-b000-000000000000"
+REPORT_INTERVAL = 1.0
+REPORT_READ_TIMEOUT = 1.25
+WEVIBE_PATTERNS = {
+    0x00: "off", 0x03: "vibrate", 0x04: "peak", 0x05: "pulse",
+    0x06: "echo", 0x07: "wave", 0x08: "tide", 0x0e: "surf",
+    0x0f: "bounce", 0x10: "massage", 0x11: "tease", 0x12: "crest",
+    0x13: "chachacha", 0x14: "step", 0x15: "ramp",
+    0x16: "tempo", 0x17: "heartbeat",
+}
+
+
+def decode_wevibe_info(data: bytes) -> dict[str, Any] | None:
+    """Decode only the documented, validated classic We-Vibe info frame.
+
+    Values reflect device firmware's reported settings, not physical motor RPM.
+    Pattern=off supersedes remembered intensity values; zero intensity alone
+    does NOT mean the device is switched off.
+    """
+    if len(data) != 8 or data[0] != 0x01:
+        return None
+    pattern = data[1]
+    internal = (data[6] >> 4) & 0x0F
+    external = data[6] & 0x0F
+    intensity = 0 if pattern == 0 else round(max(internal, external) * 100 / 15)
+    return {
+        "intensity": intensity,
+        "internal_intensity": round(internal * 100 / 15),
+        "external_intensity": round(external * 100 / 15),
+        "pattern": WEVIBE_PATTERNS.get(pattern, f"unknown_0x{pattern:02x}"),
+        "pattern_code": pattern,
+    }
+
+
 DEVICE_NAME_CHARACTERISTIC = "00002a00-0000-1000-8000-00805f9b34fb"
 _ADDRESS = re.compile(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\Z")
 _OPS = frozenset(
@@ -76,6 +113,7 @@ class _Connection:
     subscriptions: set[str] = field(default_factory=set)
     stop_plan: tuple[_StopWrite, ...] = ()
     pairing_requested: bool = False
+    report_task: asyncio.Task[Any] | None = None
 
 
 class BleBridge:
@@ -448,11 +486,100 @@ class BleBridge:
                 f"Stop GATT write failed: {str(err).strip() or type(err).__name__}"
             ) from err
         _LOGGER.debug("Verified and cached %s stop writes for this BLE session", len(plan))
+        # Start low-priority, read-only feedback only after the fresh physical
+        # connection has passed its stop gate. No telemetry is part of that gate.
+        self._start_device_report(connection)
         return {
             "verified": True,
             "connection_id": connection.connection_id,
             "write_count": len(plan),
         }
+
+    def _start_device_report(self, connection: _Connection) -> None:
+        if connection.report_task is not None:
+            return
+        services = connection.client.services
+        if not any(str(service.uuid).lower() == WEVIBE_SERVICE for service in services):
+            return
+        characteristic = services.get_characteristic(WEVIBE_INFO)
+        if characteristic is None or "read" not in getattr(characteristic, "properties", []):
+            return
+        connection.report_task = self._spawn(
+            self._poll_device_report(connection, characteristic),
+            "We-Vibe device reported intensity",
+        )
+
+    async def _poll_device_report(self, connection: _Connection, characteristic: Any) -> None:
+        """Best-effort GATT reads through this session's existing BLE client.
+
+        Do not disconnect, pair, or retry writes on feedback errors. Skip polls
+        when controls are busy and bound each read to avoid blocking a STOP.
+        """
+        address = connection.address
+        lock = self._locks.setdefault(address, asyncio.Lock())
+        failure_count = 0
+        reported_available = False
+        try:
+            while (
+                self._running
+                and not self._resetting
+                and self._connections.get(address) is connection
+                and connection.client.is_connected
+            ):
+                await asyncio.sleep(REPORT_INTERVAL)
+                if lock.locked():
+                    continue  # Motor writes and STOP take priority.
+                async with lock:
+                    if (
+                        self._connections.get(address) is not connection
+                        or not connection.client.is_connected
+                        or not self._running or self._resetting
+                    ):
+                        break
+                    try:
+                        async with asyncio.timeout(REPORT_READ_TIMEOUT):
+                            data = bytes(await connection.client.read_gatt_char(characteristic))
+                        decoded = decode_wevibe_info(data)
+                        if decoded is None:
+                            raise ValueError("Invalid We-Vibe info frame")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        failure_count += 1
+                        if reported_available:
+                            reported_available = False
+                            self._spawn(self._emit_safely({
+                                "type": "device_report_unavailable",
+                                "address": address,
+                                "connection_id": connection.connection_id,
+                            }), "optional report unavailable")
+                        if failure_count >= 3:
+                            _LOGGER.debug("Stopping optional We-Vibe reads on %s: %s", address, exc)
+                            break
+                        continue
+                failure_count = 0
+                reported_available = True
+                await self._emit_safely({
+                    "type": "device_report",
+                    "address": address,
+                    "connection_id": connection.connection_id,
+                    **decoded,
+                })
+        except asyncio.CancelledError:
+            raise
+        finally:
+            # No stale report survives disconnect or a retired session.
+            await self._emit_safely({
+                "type": "device_report_unavailable", "address": address,
+                "connection_id": connection.connection_id,
+            })
+
+    @staticmethod
+    def _cancel_device_report(connection: _Connection) -> None:
+        task = connection.report_task
+        if task is not None and not task.done():
+            task.cancel()
+        connection.report_task = None
 
     async def _connect(self, address: str, connection_id: str, epoch: int) -> dict[str, Any]:
         if address in self._closing:
@@ -704,6 +831,7 @@ class BleBridge:
         return _StopWrite(str(characteristic.uuid).lower(), bytes(data), response)
 
     async def _close_connection(self, connection: _Connection, reason: str) -> bool:
+        self._cancel_device_report(connection)
         cancelled = False
         stopped = True
         if connection.stop_plan:
@@ -774,6 +902,7 @@ class BleBridge:
             # successful replacement.
             return
         self._connections.pop(address)
+        self._cancel_device_report(connection)
         task = self._spawn(self._close_retired_connection(connection, reason), "BLE disconnected")
         self._closing[address] = task
 

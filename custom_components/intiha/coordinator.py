@@ -122,6 +122,12 @@ class DeviceState:
     last_seen: datetime | None = None
     battery: int | None = None
     outputs: dict[int, float] = field(default_factory=dict)
+    reported_intensity: int | None = None
+    reported_internal: int | None = None
+    reported_external: int | None = None
+    reported_pattern: str | None = None
+    reported_pattern_code: int | None = None
+    reported_at: datetime | None = None
     error: str | None = None
     phase: str = "offline"
     pairing_required: bool = False
@@ -745,6 +751,44 @@ class IntiHACoordinator:
             self._update_sensor(message.get("message", {}))
         self._notify()
 
+    @staticmethod
+    def _clear_reported(device: DeviceState) -> None:
+        device.reported_intensity = None
+        device.reported_internal = None
+        device.reported_external = None
+        device.reported_pattern = None
+        device.reported_pattern_code = None
+        device.reported_at = None
+
+    def _update_device_report(self, message: dict[str, Any]) -> None:
+        """Use only reads from the currently authorised BLE generation."""
+        address = str(message.get("address", "")).upper()
+        device = self.devices.get(address)
+        if (
+            not self.enabled or not self.engine_connected or device is None
+            or not device.connected or not device.connection_id
+            or message.get("connection_id") != device.connection_id
+        ):
+            return
+        intensity = message.get("intensity")
+        inside = message.get("internal_intensity")
+        outside = message.get("external_intensity")
+        pattern = message.get("pattern")
+        code = message.get("pattern_code")
+        if (
+            any(type(v) is not int or not 0 <= v <= 100 for v in (intensity, inside, outside))
+            or not isinstance(pattern, str) or len(pattern) > 40
+            or type(code) is not int or not 0 <= code <= 255
+        ):
+            return
+        device.reported_intensity = intensity
+        device.reported_internal = inside
+        device.reported_external = outside
+        device.reported_pattern = pattern
+        device.reported_pattern_code = code
+        device.reported_at = dt_util.utcnow()
+        self._notify_intensity(address)
+
     def _update_commanded_intensity(self, message: dict[str, Any]) -> None:
         """Accept private engine telemetry only for the current live BLE session."""
         address = str(message.get("address", "")).upper()
@@ -811,6 +855,7 @@ class IntiHACoordinator:
             )
             if new_connection:
                 device.outputs.clear()
+                self._clear_reported(device)
                 device.battery = None
             if description.get("ready") is True:
                 connected.add(address)
@@ -846,6 +891,7 @@ class IntiHACoordinator:
                 device.index = None
                 device.connection_id = None
                 device.outputs.clear()
+                self._clear_reported(device)
                 device.battery = None
         self._save()
 
@@ -922,6 +968,15 @@ class IntiHACoordinator:
     async def _async_ble_event(self, message: dict[str, Any]) -> None:
         kind = message.get("type")
         address = str(message.get("address", "")).upper()
+        if kind == "device_report":
+            self._update_device_report(message)
+            return  # Local BLE feedback is never forwarded to the public server.
+        if kind == "device_report_unavailable":
+            device = self.devices.get(address)
+            if device is not None and device.connection_id == message.get("connection_id"):
+                self._clear_reported(device)
+                self._notify_intensity(address)
+            return
         if kind == "advertisement":
             if address in self.devices:
                 device = self.devices[address]
@@ -964,6 +1019,8 @@ class IntiHACoordinator:
                     device.index = None
                     device.connection_id = None
                     device.outputs.clear()
+                    self._clear_reported(device)
+                    self._notify_intensity(address)
                     device.battery = None
                     self._notify()
         elif kind == "stop_failed":

@@ -442,3 +442,7 @@ Each connected device has a **Commanded intensity** sensor, showing 0-100% from 
 This is **not physical motor telemetry**: it cannot verify that the device received or acted on a BLE command, and it cannot measure autonomous native firmware patterns. Sensor state is unavailable on disconnection, and stops reset the commanded value to 0 after a confirmed stop. Data is passed only over IntiHA's existing private Home Assistant bridge; standard Buttplug protocol messages remain unchanged. Ogg's dashboard card must be updated separately to graph this sensor instead of its estimated pattern.
 
 These sensors can generate frequent Home Assistant history writes. Consider excluding `sensor.*_commanded_intensity` from Recorder if you only need live values.
+
+### Device-reported We-Vibe feedback (b19)
+
+For classic We-Vibe devices exposing the documented `f000b000-0451-4000-b000-000000000000` readable GATT characteristic, IntiHA adds **Device-reported intensity** and **Device-reported pattern** sensors. Feedback is read via the existing proxy connection only after the STOP safety gate is verified, approximately once per second. It is firmware-reported intensity settings, *not* a physical vibration sensor or guaranteed STOP verification. Unsupported device protocols have unavailable feedback sensors. The public Buttplug protocol is unchanged. Optional reads stop after repeated errors rather than jeopardising the active connection.

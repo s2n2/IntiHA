@@ -176,6 +176,12 @@
       },
       "intensity": {
         "name": "Commanded intensity"
+      },
+      "reported_intensity": {
+        "name": "Device-reported intensity"
+      },
+      "reported_pattern": {
+        "name": "Device-reported pattern"
       }
     }
   },
