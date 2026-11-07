@@ -1,3 +1,11 @@
+## 0.3.0b17 - restore standard Buttplug server compatibility
+- Revert the b16 external WebSocket MAC/model-name enrichment entirely.
+- Forward Buttplug ServerInfo, DeviceList, DeviceAdded, Ok, Error, and all events without editing their JSON. This removes the suspected cause of Ogg looping between Searching and Connecting.
+- Retain HA-side model recognition, b16's shorter BLE connect timeouts, and stop-verified recovery logic.
+- MAC-based matching in Ogg remains available for other servers that expose physical addresses; IntiHA's public Buttplug messages no longer supply an extra MAC.
+- No Ogg integration changes required; Ogg v0.1.7 is compatible with standard Buttplug v3.
+- Full Rust/Docker compile and live BLE test are still required.
+
 ## 0.3.0b16 - reconnect safety, identity and shorter timeout
 - Expose the stable BLE MAC address and best-known model name to external Intiface/Buttplug clients including Ogg (extra `BluetoothAddress` field and `DeviceDisplayName`).
 - Preserve specific advertised/device identity and prevent generic "We-Vibe" names replacing better names.

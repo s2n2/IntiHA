@@ -1,6 +1,6 @@
 # IntiHA
 
-> **0.3.0b16 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
+> **0.3.0b17 proxy-native beta:** This build is for installations that use Home Assistant managed Bluetooth / ESPHome active proxies and have **no local Bluetooth adapter**. It does not require BlueZ, D-Bus, `btleplug`, or a USB Bluetooth dongle.
 
 
 **A plug-and-play Buttplug server using Home Assistant's Bluetooth coverage.**
@@ -16,7 +16,7 @@ Assistant owns BLE scanning, adapter selection and GATT through its connectable
 adapters and ESPHome proxies. The Rust engine owns Buttplug protocol matching,
 device drivers and the external Buttplug server.
 
-**Version 0.3.0b16 - proxy recovery and clearer connection diagnostics beta.**
+**Version 0.3.0b17 - proxy recovery and clearer connection diagnostics beta.**
 
 This package keeps broad/service-fingerprint discovery and the persistent identity fixes. The Engine app currently uses a **local Supervisor Docker build**, so updates may show 0% progress while Cargo compiles; no published GHCR image is required. Device identity remains persistent. IntiHA now remembers the best specific name it has learned for each Bluetooth address, actively asks Home Assistant for scan-response names when a supported device is otherwise generic, and can recover the standard BLE Device Name after connection. A later generic Buttplug label can no longer downgrade a learned name such as **Bond**. Each discovered device retains the persistent **Connect to this device** switch introduced in b7.
 
@@ -73,7 +73,7 @@ is in [CHANGELOG.md](CHANGELOG.md); published updates also show the matching
 | **0.2.0** | Plug-and-play setup: no tokens or device approval, automatic compatible-device connection, discovery, dynamic controls, and safer reconnect handling. |
 | **0.1.0** | Initial engine, HACS integration, sensors, Bluetooth proxy support, stops and manual control. |
 
-## Updating to 0.3.0b16
+## Updating to 0.3.0b17
 
 Update **both** the IntiHA HACS integration and **IntiHA Proxy Engine** to
 0.3.0b16. The Engine currently builds its Rust binary locally inside Docker;
@@ -410,3 +410,24 @@ IntiHA keeps three live, exclusive groups: **Currently connected**, **Known, not
 ### b14 known-device reconnection
 
 When the engine is on and auto-reconnect is enabled, advertisements from previously recognised, connection-enabled devices are prioritised ahead of newly discovered peripherals. This works when a powered-off device starts advertising again or when a device drops and becomes reachable by a different ESPHome proxy. BLE does not roam seamlessly, and no connection is possible while all suitable proxies are unavailable. Existing retry backoffs are not cleared by inventory changes. Device output remains stopped after any reconnection.
+
+
+### v0.3.0b17 - public protocol compatibility rollback
+
+This release restores the stock Buttplug JSON protocol on the public
+WebSocket (port 12345). b16 added `BluetoothAddress` and model-specific
+`DeviceDisplayName` to Buttplug device announcements, which could make
+protocol-compliant external controllers such as Ogg reject a handshake.
+The extension is **removed**, not merely patched.
+
+The improvements to identifying models inside **IntiHA's own Home Assistant
+entities** are retained. So are b16's faster Bluetooth timeouts, safe STOP
+verification, and proxy reconnection logic. Ogg can still de-duplicate
+physical devices where an ordinary server advertises a usable MAC, but
+IntiHA can no longer supply its internal Bluetooth address over the public
+Buttplug protocol. Ogg's fallback matching applies otherwise.
+
+To update, install the complete b17 repository in GitHub, refresh the
+IntiHA add-on repository, update **both the IntiHA HACS integration and the
+IntiHA Proxy Engine app**, then reload Ogg. If the previous local Docker
+build is still running, let it finish before trying another update.

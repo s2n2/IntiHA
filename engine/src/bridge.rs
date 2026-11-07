@@ -176,7 +176,6 @@ pub struct Bridge {
     connecting: Mutex<HashSet<String>>,
     blocked_addresses: Mutex<HashSet<String>>,
     known_addresses: Mutex<HashSet<String>>,
-    pub known_names: Mutex<HashMap<String, String>>,
     comm_sender: Mutex<Option<mpsc::Sender<HardwareCommunicationManagerEvent>>>,
     configuration: Arc<DeviceConfigurationManager>,
     pub manual_timeout: AtomicU64,
@@ -203,7 +202,6 @@ impl Bridge {
             connecting: Mutex::new(HashSet::new()),
             blocked_addresses: Mutex::new(HashSet::new()),
             known_addresses: Mutex::new(HashSet::new()),
-            known_names: Mutex::new(HashMap::new()),
             comm_sender: Mutex::new(None),
             configuration,
             manual_timeout: AtomicU64::new(60),
@@ -397,22 +395,6 @@ impl Bridge {
                 known.insert(address);
             }
             *self.known_addresses.lock().unwrap() = known;
-        }
-        if let Some(value) = value.get("known_names") {
-            let names = value.as_object().ok_or("known_names must be a map")?;
-            if names.len() > 256 {
-                return Err("known_names is too large".into());
-            }
-            let mut accepted = HashMap::new();
-            for (raw_address, name) in names {
-                let address = raw_address.to_uppercase();
-                let label = name.as_str().ok_or("known_names entries must be strings")?.trim();
-                if !valid_address(&address) || label.is_empty() || label.len() > 100 {
-                    return Err("known_names contains an invalid address or label".into());
-                }
-                accepted.insert(address, label.to_owned());
-            }
-            *self.known_names.lock().unwrap() = accepted;
         }
         // Reconfiguring inventory/connection preferences must not reset
         // retry cooldowns. A failed proxy can otherwise be hammered whenever
