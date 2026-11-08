@@ -57,6 +57,8 @@ REPORT_QUIET_AFTER_WRITE = 0.3
 # change); re-read occasionally so a missed notification cannot stick.
 REPORT_NOTIFY_REFRESH = 30.0
 REPORT_BURST_SETTLE = 0.15
+# Poll interval while a non-notifying device is being driven.
+REPORT_ACTIVE_INTERVAL = 2.0
 REPORT_MAX_INVALID_FRAMES = 3
 # Standard Bluetooth Battery Level (read-only). Upstream We-Vibe profiles
 # declare no battery sensor, so read it directly when the device exposes it.
@@ -839,8 +841,13 @@ class BleBridge:
         address = connection.address
         lock = self._locks.setdefault(address, asyncio.Lock())
         frames: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
+        # Some classic firmware (Jive) advertises notify but never sends;
+        # keep polling those until a notification proves otherwise.
+        notified = False
 
         def on_notify(_sender: Any, data: bytearray) -> None:
+            nonlocal notified
+            notified = True
             value = bytes(data)
             if connection.report_tap is not None:
                 with suppress(Exception):
@@ -898,8 +905,14 @@ class BleBridge:
             await status_update("waiting", "Subscribed to We-Vibe status notifications")
             await refresh()
             while alive():
+                if notified:
+                    wait = REPORT_NOTIFY_REFRESH
+                elif self._hass.loop.time() - connection.last_write < 10.0:
+                    wait = REPORT_ACTIVE_INTERVAL
+                else:
+                    wait = REPORT_INTERVAL
                 try:
-                    async with asyncio.timeout(REPORT_NOTIFY_REFRESH):
+                    async with asyncio.timeout(wait):
                         data = await frames.get()
                 except TimeoutError:
                     await refresh()
