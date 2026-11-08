@@ -1,6 +1,6 @@
 """Optional classic We-Vibe firmware feedback, independent of Buttplug transport."""
 
-from custom_components.intiha.ble import decode_wevibe_info
+from custom_components.intiha.ble import decode_wevibe_battery_frame, decode_wevibe_info
 from custom_components.intiha.sensor import IntiHASensor
 
 ADDRESS = 'AA:BB:CC:DD:EE:01'
@@ -30,6 +30,12 @@ def test_current_firmware_header_0x04_needs_a_known_model_byte():
     assert decode_wevibe_info(bytes.fromhex('0400d8cb8e1400ff')) is None
     # Chorus-family (Sync 2) 20-byte frames are a different format.
     assert decode_wevibe_info(bytes.fromhex('040000f7251c1cf5021e000300001e0000140005')) is None
+
+
+def test_sync2_twenty_byte_frame_reports_battery_only():
+    assert decode_wevibe_battery_frame(bytes.fromhex('040000f7251c1cf5021e000300001e0000140005')) == 97
+    assert decode_wevibe_battery_frame(bytes.fromhex('040000f6251d1df5021e000300001e0000140005')) == 96
+    assert decode_wevibe_battery_frame(bytes.fromhex('0400d8cb8e140040')) is None
 
 
 async def test_reporting_uses_only_current_session_and_disappears_on_disconnect(coordinator):

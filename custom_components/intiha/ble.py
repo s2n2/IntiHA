@@ -106,6 +106,17 @@ def decode_wevibe_info(data: bytes) -> dict[str, Any] | None:
     }
 
 
+def decode_wevibe_battery_frame(data: bytes) -> int | None:
+    """Battery from newer (Chorus-family, e.g. Sync 2) 20-byte info frames.
+
+    Observed layout shares the classic prefix: header 0x04, pattern, then the
+    16-bit battery level low byte first. Motor intensities are not decoded.
+    """
+    if len(data) != 20 or data[0] != 0x04:
+        return None
+    return round(((data[3] << 8) | data[2]) * 100 / 0xFFFF)
+
+
 DEVICE_NAME_CHARACTERISTIC = "00002a00-0000-1000-8000-00805f9b34fb"
 _ADDRESS = re.compile(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\Z")
 _OPS = frozenset(
@@ -583,6 +594,7 @@ class BleBridge:
         invalid_frames = 0
         last_frame = ""
         last_battery: int | None = None
+        battery_only_mode = False
         gave_up = False
         reported_available = False
         last_status = None
@@ -607,7 +619,9 @@ class BleBridge:
             ):
                 # Transient proxy hiccups must not disable feedback forever.
                 # Backoff reduces GATT traffic after repeated failures.
-                await asyncio.sleep(REPORT_INTERVAL if failure_count < 3 else 30.0)
+                await asyncio.sleep(
+                    60.0 if battery_only_mode else REPORT_INTERVAL if failure_count < 3 else 30.0
+                )
                 if lock.locked():
                     continue  # Motor writes and STOP take priority.
                 if self._hass.loop.time() - connection.last_write < REPORT_QUIET_AFTER_WRITE:
@@ -625,7 +639,10 @@ class BleBridge:
                         async with asyncio.timeout(REPORT_READ_TIMEOUT):
                             data = bytes(await connection.client.read_gatt_char(characteristic))
                         decoded = decode_wevibe_info(data)
-                        if decoded is None:
+                        battery_only = (
+                            decode_wevibe_battery_frame(data) if decoded is None else None
+                        )
+                        if decoded is None and battery_only is None:
                             last_frame = data.hex(" ")
                             raise ValueError(f"Unrecognised status frame [{last_frame}]")
                     except asyncio.CancelledError:
@@ -680,6 +697,19 @@ class BleBridge:
                     continue
                 failure_count = 0
                 invalid_frames = 0
+                if decoded is None:
+                    # Battery-only frame: report battery, keep polling slowly.
+                    battery_only_mode = True
+                    if battery_only != last_battery:
+                        last_battery = battery_only
+                        await self._emit_safely({
+                            "type": "battery", "address": address,
+                            "connection_id": connection.connection_id, "level": battery_only,
+                        })
+                    await status_update(
+                        "unsupported", "Battery reported; motor intensity not available"
+                    )
+                    continue
                 reported_available = True
                 if decoded.get("battery") != last_battery:
                     last_battery = decoded.get("battery")

@@ -18,7 +18,7 @@ use std::{
     collections::HashMap,
     fmt,
     sync::{Arc, atomic::Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
@@ -418,6 +418,7 @@ impl HaHardware {
                 // This does NOT extend the physical GATT operation timeout.
                 bridge.rpc(args, Duration::from_secs(25)).await
             };
+            *session.last_activity.lock().unwrap() = Instant::now();
             drop(io_guard);
             if let Err(error) = &result {
                 *session.last_io_error.lock().unwrap() = Some(format!("{op}: {error}"));

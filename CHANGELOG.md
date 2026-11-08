@@ -1,3 +1,8 @@
+## 0.3.0b26 / engine 0.3.0b24 - Silent keep-alive, Sync 2 battery
+
+- **Keep-alive:** a connected device whose last output was a stop (or zero) and that has had no Bluetooth traffic for 20 s is sent its own verified stop packet again. This keeps idle links alive with no movement. It is never sent while a device is running and is ordered behind real commands on the same per-device lock. (Buttplug's built-in keepalive is not used: its connect-time stop is deduplicated against IntiHA's stop verification.)
+- **Sync 2 battery:** Chorus-family 20-byte info frames now report battery (bytes 2-3, low byte first), polled once a minute. Motor intensity is not available from these frames.
+
 ## 0.3.0b25 - Device-reported intensity and battery for current We-Vibe firmware
 
 - Current classic-family firmware (e.g. Ditto) answers the info read with header `0x04` instead of the documented `0x01`, in the same layout. These frames are now decoded when the model byte is a known We-Vibe model, so **Device reported intensity/pattern** work again.

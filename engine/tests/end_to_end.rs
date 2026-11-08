@@ -470,6 +470,59 @@ async fn repeated_pulse_after_external_stop_reaches_the_device_again() {
     h.finish().await;
 }
 
+/// Idle devices get silent keep-alive stops; a running device never does.
+#[tokio::test]
+async fn keepalive_resends_stop_only_while_idle() {
+    let h = Harness::start().await;
+    h.app.bridge.keepalive_idle_ms.store(700, Ordering::SeqCst);
+    let device = h.ready().await;
+    let index = device["DeviceIndex"].clone();
+    let mut events = h.events.subscribe();
+    // Idle after connecting: a keep-alive stop request must arrive.
+    Harness::wait(&mut events, |v| v["type"] == "request" && v["op"] == "stop").await;
+
+    let (mut socket, _) = connect_async(&h.client_url).await.unwrap();
+    macro_rules! request {
+        ($message:expr) => {{
+            socket.send(Message::Text(json!([$message]).to_string().into())).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    match socket.next().await.unwrap().unwrap() {
+                        Message::Text(t) => {
+                            let value = serde_json::from_str::<Value>(&t).unwrap();
+                            if value[0].get("Ok").is_some() || value[0].get("ServerInfo").is_some() { break value; }
+                            if value[0].get("Error").is_some() { panic!("request failed: {value}"); }
+                        }
+                        Message::Ping(v) => socket.send(Message::Pong(v)).await.unwrap(),
+                        _ => {}
+                    }
+                }
+            }).await.expect("response")
+        }};
+    }
+    request!(json!({"RequestServerInfo":{"Id":1,"ClientName":"Keepalive test","MessageVersion":3}}));
+    request!(json!({"ScalarCmd":{"Id":2,"DeviceIndex":index,"Scalars":[{"Index":0,"Scalar":0.5,"ActuatorType":"Vibrate"}]}}));
+    // While running, no keep-alive stop may be sent, even after the idle time.
+    let mut events = h.events.subscribe();
+    let stopped_while_running = tokio::time::timeout(Duration::from_millis(2500), async {
+        loop {
+            let v = events.recv().await.unwrap();
+            if v["type"] == "request" && v["op"] == "stop" { break; }
+        }
+    }).await;
+    assert!(stopped_while_running.is_err(), "keep-alive stop must never interrupt output");
+    let last = h.writes.lock().unwrap().last().unwrap()["data"].clone();
+    assert_ne!(last, json!([15, 0, 0, 0, 0, 0, 0, 0]), "device must still be running");
+
+    // After an explicit stop it is idle again and keep-alives resume.
+    request!(json!({"StopDeviceCmd":{"Id":3,"DeviceIndex":index}}));
+    let mut events = h.events.subscribe();
+    Harness::wait(&mut events, |v| v["type"] == "request" && v["op"] == "stop").await;
+    assert_eq!(h.writes.lock().unwrap().last().unwrap()["data"], json!([15, 0, 0, 0, 0, 0, 0, 0]));
+    socket.close(None).await.unwrap();
+    h.finish().await;
+}
+
 #[tokio::test]
 async fn external_stop_is_a_barrier_and_cannot_bounce_back_to_previous_output() {
     let h = Harness::start().await;

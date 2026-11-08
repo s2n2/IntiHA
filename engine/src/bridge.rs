@@ -137,6 +137,11 @@ pub struct Session {
     pub endpoints: RwLock<HashMap<Endpoint, String>>,
     pub write_modes: RwLock<HashMap<String, bool>>,
     pub stop_recording: Mutex<Option<Vec<StopWrite>>>,
+    /// True while the device's last accepted output was a stop/zero level.
+    /// Only idle devices receive keep-alive stop packets.
+    pub idle: AtomicBool,
+    /// Last completed Bluetooth operation on this session (keep-alive timer).
+    pub last_activity: Mutex<Instant>,
 }
 
 impl Session {
@@ -156,6 +161,8 @@ impl Session {
             endpoints: RwLock::new(HashMap::new()),
             write_modes: RwLock::new(HashMap::new()),
             stop_recording: Mutex::new(None),
+            idle: AtomicBool::new(true),
+            last_activity: Mutex::new(Instant::now()),
         }
     }
 }
@@ -196,6 +203,8 @@ pub struct Bridge {
     /// master off, HA bridge loss or shutdown. A single device dropping or
     /// reconnecting is reported with DeviceRemoved/DeviceAdded instead.
     pub client_epoch: AtomicU64,
+    /// Idle time (ms) before a stopped device gets a keep-alive stop.
+    pub keepalive_idle_ms: AtomicU64,
     pub scanning: AtomicBool,
     pub reconnect_paused: AtomicBool,
     candidates: Mutex<HashMap<String, Candidate>>,
@@ -227,6 +236,7 @@ impl Bridge {
             external_active: AtomicBool::new(false),
             control_epoch: AtomicU64::new(0),
             client_epoch: AtomicU64::new(0),
+            keepalive_idle_ms: AtomicU64::new(20_000),
             scanning: AtomicBool::new(false),
             reconnect_paused: AtomicBool::new(false),
             candidates: Mutex::new(HashMap::new()),
@@ -819,6 +829,36 @@ impl Bridge {
         result.map(|_| ())
     }
 
+    /// Silent keep-alive: re-send the verified stop plan to an idle device.
+    ///
+    /// Some toys drop an idle Bluetooth link. Re-sending the device's own
+    /// verified stop keeps the link active without any movement. It holds the
+    /// session's I/O lock and re-checks idleness under it, so it can never be
+    /// ordered after (and cancel) a real output command.
+    pub async fn keepalive_session(&self, session: &Arc<Session>, idle_for: Duration) -> bool {
+        let _io = session.io_lock.lock().await;
+        if !session.connected.load(Ordering::SeqCst)
+            || !session.ready.load(Ordering::SeqCst)
+            || !session.idle.load(Ordering::SeqCst)
+            || session.last_activity.lock().unwrap().elapsed() < idle_for
+            || self.session(&session.id).is_none()
+        {
+            return false;
+        }
+        let result = self
+            .rpc(
+                json!({"op":"stop","address":session.address,"connection_id":session.id}),
+                Duration::from_secs(8),
+            )
+            .await;
+        *session.last_activity.lock().unwrap() = Instant::now();
+        if result.is_err() {
+            self.invalidate(&session.id);
+            return false;
+        }
+        true
+    }
+
     /// Send the verified cached stop plan while keeping the BLE session alive.
     /// This is used for external-client handover/disconnect so a controller
     /// cannot leave an actuator running, without needlessly tearing down the
@@ -836,6 +876,9 @@ impl Bridge {
         let _ = self
             .send(json!({"type":"output_clear","address":session.address}))
             .await;
+        if result.is_ok() {
+            session.idle.store(true, Ordering::SeqCst);
+        }
         if result.is_err() {
             // A failed stop means physical state is uncertain. Retire this
             // session so no later command can target a possibly moving device.

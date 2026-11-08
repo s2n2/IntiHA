@@ -216,6 +216,26 @@ impl App {
 
     /// Mirror accepted vibration setpoints over the private HA bridge.
     /// The public Buttplug response and DeviceList stay completely unchanged.
+    /// Track whether a device is idle (last output stop/zero) for keep-alives.
+    fn note_output(&self, command: &Value) {
+        let Some((name, body)) = command.as_object().and_then(|o| o.iter().next()) else {
+            return;
+        };
+        if !is_movement(name) {
+            return;
+        }
+        let Some(index) = body.get("DeviceIndex").and_then(Value::as_u64).and_then(|i| u32::try_from(i).ok()) else {
+            return;
+        };
+        let idle = commanded_vibration_levels(command)
+            .is_some_and(|(_, levels)| levels.iter().all(|(_, level)| *level == 0.0));
+        if let Some(info) = self.manager.device_info(index)
+            && let Some(session) = self.bridge.session_for(info.identifier().address())
+        {
+            session.idle.store(idle, Ordering::SeqCst);
+        }
+    }
+
     fn report_intensity(&self, command: &Value) {
         let Some((index, levels)) = commanded_vibration_levels(command) else {
             return;
@@ -338,6 +358,19 @@ impl App {
                 Some(index) => self.stop_device_output(index).await,
                 None => self.stop_outputs().await,
             };
+        }
+        match index.and_then(|i| self.manager.device_info(i)) {
+            Some(info) => {
+                if let Some(session) = self.bridge.session_for(info.identifier().address()) {
+                    session.idle.store(true, Ordering::SeqCst);
+                }
+            }
+            None if index.is_none() => {
+                for session in self.bridge.all_sessions() {
+                    session.idle.store(true, Ordering::SeqCst);
+                }
+            }
+            None => {}
         }
         let clear = match index {
             None => Some(json!({"type":"output_clear"})),
@@ -487,6 +520,7 @@ impl App {
                 }
                 let response = self.v3(message.clone()).await?;
                 if movement {
+                    self.note_output(&message);
                     self.report_intensity(&message);
                 }
                 if movement {
@@ -738,7 +772,8 @@ impl App {
         tokio::join!(
             self.manual_watchdog(),
             self.discovery_supervisor(),
-            self.forward_sensor_events()
+            self.forward_sensor_events(),
+            self.keepalive_supervisor()
         );
     }
 
@@ -761,6 +796,22 @@ impl App {
                             .await;
                     }
                 }
+            }
+        }
+    }
+
+    /// Re-send the verified stop to devices that have been idle for a while.
+    async fn keepalive_supervisor(&self) {
+        let mut interval = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            interval.tick().await;
+            if !self.bridge.enabled.load(Ordering::SeqCst) || !self.bridge.is_connected() {
+                continue;
+            }
+            let idle_for =
+                Duration::from_millis(self.bridge.keepalive_idle_ms.load(Ordering::SeqCst));
+            for session in self.bridge.all_sessions() {
+                self.bridge.keepalive_session(&session, idle_for).await;
             }
         }
     }
@@ -1153,6 +1204,7 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                             }
                             if succeeded {
                                 if let Some(command) = movement_command.as_ref() {
+                                    app.note_output(command);
                                     app.report_intensity(command);
                                 }
                             }
