@@ -969,6 +969,9 @@ impl Bridge {
         )
         .await?;
         self.scanning.store(enabled, Ordering::SeqCst);
+        // Clients (e.g. Ogg) can start/stop a search too; keep HA's
+        // "Searching" state in step, not only for HA-initiated searches.
+        let _ = self.send(self.status()).await;
         if enabled {
             for candidate in self.candidates.lock().unwrap().values_mut() {
                 candidate.next_attempt = Instant::now();

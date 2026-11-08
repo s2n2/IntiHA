@@ -1,3 +1,7 @@
+## engine 1.0.1 - Searching state for client searches
+
+- A search started or stopped by a Buttplug client (for example Ogg's automatic IntiHA search) now updates Home Assistant's **Searching** state, not only searches started from Home Assistant.
+
 ## 1.0.0 - First stable release (integration and engine 1.0.0)
 
 - Stable release of the fixes since 0.3.0b22: stops routed through the Buttplug driver (reliable repeated pulses), no protocol guessing for nameless devices (the Bond lockup), stable device names and `/intiha/devices` identity, external clients no longer dropped when one device reconnects, quiet keep-alive for idle devices, We-Vibe status/battery decoding (classic 0x04 frames and Sync 2 battery), and reduced status polling.
