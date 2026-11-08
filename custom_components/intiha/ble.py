@@ -50,7 +50,13 @@ WEVIBE_INFO = "f000b000-0451-4000-b000-000000000000"
 # up on devices whose firmware does not answer with the classic frame.
 REPORT_INTERVAL = 5.0
 REPORT_READ_TIMEOUT = 4.0
-REPORT_QUIET_AFTER_WRITE = 2.0
+# Reads queue behind writes on the per-device lock, so a short gap is enough;
+# a long one meant classic devices never reported while a pattern was running.
+REPORT_QUIET_AFTER_WRITE = 0.3
+# Silence on a notifying status characteristic is normal (it only sends on
+# change); re-read occasionally so a missed notification cannot stick.
+REPORT_NOTIFY_REFRESH = 30.0
+REPORT_BURST_SETTLE = 0.15
 REPORT_MAX_INVALID_FRAMES = 3
 # Standard Bluetooth Battery Level (read-only). Upstream We-Vibe profiles
 # declare no battery sensor, so read it directly when the device exposes it.
@@ -94,16 +100,74 @@ def decode_wevibe_info(data: bytes) -> dict[str, Any] | None:
     pattern = data[1]
     internal = (data[6] >> 4) & 0x0F
     external = data[6] & 0x0F
-    intensity = 0 if pattern == 0 else round(max(internal, external) * 100 / 15)
+    # Commands use 0-15 per motor, but firmware reports its own 0-11 steps
+    # (measured on a Jive: sent 15/11/8/5/3/2 -> reported 11/8/5/3/2/2).
+    def scaled(level: int) -> int:
+        return round(min(level, CLASSIC_REPORT_MAX) * 100 / CLASSIC_REPORT_MAX)
+
+    intensity = 0 if pattern == 0 else scaled(max(internal, external))
     return {
         "intensity": intensity,
-        "internal_intensity": round(internal * 100 / 15),
-        "external_intensity": round(external * 100 / 15),
+        "internal_intensity": scaled(internal),
+        "external_intensity": scaled(external),
         "pattern": WEVIBE_PATTERNS.get(pattern, f"unknown_0x{pattern:02x}"),
         "pattern_code": pattern,
         # 16-bit level, low byte first (0x0000 = 0%, 0xFFFF = 100%).
         "battery": round(((data[3] << 8) | data[2]) * 100 / 0xFFFF),
     }
+
+
+CLASSIC_REPORT_MAX = 11
+# Newer 20-byte status frames. Chorus (Sync 2 family) reports the 0-30 level it
+# was sent; the 8-bit family (Bond, ...) reports Buttplug's step + 3.
+CHORUS_NAMES = ("chorus", "skeena", "sync 2", "sync o", "sync lite")
+EIGHT_BIT_STEPS = {
+    "vector": 12, "melt": 22, "wand": 22, "bond": 27, "nelson": 27, "nova": 27,
+}
+
+
+def decode_wevibe_status_frame(data: bytes, name: str = "") -> dict[str, Any] | None:
+    """Decode the 20-byte status frame (8-bit and Chorus families).
+
+    Measured layout: ``HH PP B0 B1 ?? M1 M2 ?? NN ?? ?? MASK ...`` where HH is
+    0x01 running / 0x04 idle, PP the pattern (0 = off), B0-B1 battery (low
+    byte first), M1/M2 the motor levels, NN the motor count and MASK the
+    motors switched on (bit 0 = motor 1, bit 1 = motor 2). Levels of motors
+    that are switched off are remembered values, so they are reported as 0.
+    """
+    if len(data) != 20 or data[0] not in (0x01, 0x04):
+        return None
+    lowered = (name or "").lower()
+    steps = next((s for key, s in EIGHT_BIT_STEPS.items() if key in lowered), None)
+    chorus = any(key in lowered for key in CHORUS_NAMES) or (
+        steps is None and any(data[12:])  # 8-bit frames leave the tail empty
+    )
+    pattern = data[1]
+    mask = data[11] if data[11] in (1, 2, 3) else 3
+
+    def level(raw: int, on: bool) -> int:
+        if pattern == 0 or not on:
+            return 0
+        if chorus:
+            return round(min(raw, 30) * 100 / 30)
+        span = steps or 27
+        return round(min(max(raw - 3, 0), span) * 100 / span)
+
+    first = level(data[5], bool(mask & 1))
+    second = level(data[6], bool(mask & 2)) if data[8] >= 2 else 0
+    return {
+        "intensity": max(first, second),
+        "internal_intensity": first,
+        "external_intensity": second,
+        "pattern": WEVIBE_PATTERNS.get(pattern, f"unknown_0x{pattern:02x}"),
+        "pattern_code": pattern,
+        "battery": round(((data[3] << 8) | data[2]) * 100 / 0xFFFF),
+    }
+
+
+def decode_wevibe_report(data: bytes, name: str = "") -> dict[str, Any] | None:
+    """Any known We-Vibe status frame."""
+    return decode_wevibe_info(data) or decode_wevibe_status_frame(data, name)
 
 
 def decode_wevibe_battery_frame(data: bytes) -> int | None:
@@ -158,6 +222,11 @@ class _Connection:
     report_task: asyncio.Task[Any] | None = None
     battery_task: asyncio.Task[Any] | None = None
     last_write: float = 0.0
+    name: str = ""
+    # Status notifications owned by the report watcher (UUID), and an
+    # optional tap the research capture uses to see them too.
+    report_notify: str | None = None
+    report_tap: Callable[[bytes], None] | None = None
 
 
 class BleBridge:
@@ -590,8 +659,13 @@ class BleBridge:
             status = "not_readable"
             detail = "Status characteristic does not permit BLE reads"
         else:
+            notify = (
+                "notify" in getattr(characteristic, "properties", [])
+                and WEVIBE_INFO not in connection.subscriptions
+            )
             connection.report_task = self._spawn(
-                self._poll_device_report(connection, characteristic),
+                self._watch_device_report(connection, characteristic)
+                if notify else self._poll_device_report(connection, characteristic),
                 "We-Vibe device reported intensity",
             )
             return
@@ -660,7 +734,7 @@ class BleBridge:
                     try:
                         async with asyncio.timeout(REPORT_READ_TIMEOUT):
                             data = bytes(await connection.client.read_gatt_char(characteristic))
-                        decoded = decode_wevibe_info(data)
+                        decoded = decode_wevibe_report(data, connection.name)
                         battery_only = (
                             decode_wevibe_battery_frame(data) if decoded is None else None
                         )
@@ -756,6 +830,119 @@ class BleBridge:
             if not gave_up:
                 await status_update("disconnected", "Bluetooth status read session ended")
 
+    async def _watch_device_report(self, connection: _Connection, characteristic: Any) -> None:
+        """Follow status notifications (newer firmware sends one on every change).
+
+        Subscribing only enables the standard notification descriptor; nothing
+        is sent to the motor. Falls back to slow reads if subscribing fails.
+        """
+        address = connection.address
+        lock = self._locks.setdefault(address, asyncio.Lock())
+        frames: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
+
+        def on_notify(_sender: Any, data: bytearray) -> None:
+            value = bytes(data)
+            if connection.report_tap is not None:
+                with suppress(Exception):
+                    connection.report_tap(value)
+            with suppress(asyncio.QueueFull):
+                frames.put_nowait(value)
+
+        def alive() -> bool:
+            return (
+                self._running and not self._resetting
+                and self._connections.get(address) is connection
+                and connection.client.is_connected
+            )
+
+        try:
+            async with lock:
+                async with asyncio.timeout(REPORT_READ_TIMEOUT):
+                    await connection.client.start_notify(characteristic, on_notify)
+            connection.report_notify = WEVIBE_INFO
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - optional feature
+            _LOGGER.debug("Status notifications unavailable on %s: %s", address, exc)
+            await self._poll_device_report(connection, characteristic)
+            return
+
+        last_status: str | None = None
+        last_report: dict[str, Any] | None = None
+        last_battery: int | None = None
+        unknown_logged = False
+
+        async def status_update(state: str, detail: str) -> None:
+            nonlocal last_status
+            if state != last_status:
+                last_status = state
+                await self._emit_safely({
+                    "type": "device_report_status", "address": address,
+                    "connection_id": connection.connection_id,
+                    "status": state, "detail": detail,
+                })
+
+        async def refresh() -> None:
+            if lock.locked():
+                return
+            async with lock:
+                if not alive():
+                    return
+                with suppress(Exception):
+                    async with asyncio.timeout(REPORT_READ_TIMEOUT):
+                        data = bytes(await connection.client.read_gatt_char(characteristic))
+                    with suppress(asyncio.QueueFull):
+                        frames.put_nowait(data)
+
+        try:
+            await status_update("waiting", "Subscribed to We-Vibe status notifications")
+            await refresh()
+            while alive():
+                try:
+                    async with asyncio.timeout(REPORT_NOTIFY_REFRESH):
+                        data = await frames.get()
+                except TimeoutError:
+                    await refresh()
+                    continue
+                # Firmware sends one notification per field in a quick burst
+                # (pattern, mask, level...); only the settled frame is real.
+                await asyncio.sleep(REPORT_BURST_SETTLE)
+                while not frames.empty():
+                    data = frames.get_nowait()
+                decoded = decode_wevibe_report(data, connection.name)
+                if decoded is None:
+                    if not unknown_logged:
+                        unknown_logged = True
+                        _LOGGER.info("%s sent an unrecognised status frame [%s]", address, data.hex(" "))
+                    continue
+                battery = decoded.pop("battery", None)
+                if battery is not None and battery != last_battery:
+                    last_battery = battery
+                    await self._emit_safely({
+                        "type": "battery", "address": address,
+                        "connection_id": connection.connection_id, "level": battery,
+                    })
+                if decoded != last_report:
+                    last_report = decoded
+                    await self._emit_safely({
+                        "type": "device_report", "address": address,
+                        "connection_id": connection.connection_id, **decoded,
+                    })
+                await status_update("available", "Device-reported settings received (live)")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            connection.report_notify = None
+            if connection.client.is_connected:
+                with suppress(Exception):
+                    async with asyncio.timeout(2.0):
+                        await connection.client.stop_notify(characteristic)
+            await self._emit_safely({
+                "type": "device_report_unavailable", "address": address,
+                "connection_id": connection.connection_id,
+            })
+            await status_update("disconnected", "Bluetooth status session ended")
+
     async def async_capture(self, address: str, seconds: float) -> list[dict[str, Any]]:
         """Record status values for protocol research. Never writes to the motor.
 
@@ -781,8 +968,11 @@ class BleBridge:
             c for s in connection.client.services for c in s.characteristics
             if not str(c.uuid).lower().endswith("-0000-1000-8000-00805f9b34fb")
         ]
+        owned = set(connection.subscriptions) | {connection.report_notify}
         notify = [c for c in vendor if {"notify", "indicate"} & set(c.properties)
-                  and str(c.uuid).lower() not in connection.subscriptions]
+                  and str(c.uuid).lower() not in owned]
+        if connection.report_notify:
+            connection.report_tap = lambda data: note("notify", connection.report_notify, data)
         readable = [c for c in vendor if "read" in c.properties]
         subscribed = []
         for characteristic in notify:
@@ -807,6 +997,7 @@ class BleBridge:
                             pass
                 await asyncio.sleep(0.5)
         finally:
+            connection.report_tap = None
             for characteristic in subscribed:
                 with suppress(Exception):
                     await connection.client.stop_notify(characteristic)
@@ -986,6 +1177,7 @@ class BleBridge:
                 address, connection_id, client, pairing_requested=pairing_required
             )
             resolved_name = await self._connected_device_name(connection, device)
+            connection.name = resolved_name or getattr(device, "name", None) or ""
             if resolved_name:
                 await self._emit_safely(
                     {"type": "identity", "address": address, "name": resolved_name}

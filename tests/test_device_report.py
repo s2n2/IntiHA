@@ -1,6 +1,11 @@
 """Optional classic We-Vibe firmware feedback, independent of Buttplug transport."""
 
-from custom_components.intiha.ble import decode_wevibe_battery_frame, decode_wevibe_info
+from custom_components.intiha.ble import (
+    decode_wevibe_battery_frame,
+    decode_wevibe_info,
+    decode_wevibe_report,
+    decode_wevibe_status_frame,
+)
 from custom_components.intiha.sensor import IntiHASensor
 
 ADDRESS = 'AA:BB:CC:DD:EE:01'
@@ -12,7 +17,7 @@ def test_wevibe_info_decoder_validates_format_and_off_state():
     reading = decode_wevibe_info(bytes([1, 3, 0, 0, 0, 0, 0xF9, 2]))
     assert reading == {
         'intensity': 100, 'internal_intensity': 100,
-        'external_intensity': 60, 'pattern': 'vibrate',
+        'external_intensity': 82, 'pattern': 'vibrate',
         'pattern_code': 3, 'battery': 0,
     }
     # Pattern=off is authoritative even if intensity bytes linger.
@@ -33,7 +38,7 @@ def test_current_firmware_header_0x04_needs_a_known_model_byte():
 
 
 def test_sync2_twenty_byte_frame_reports_battery_only():
-    assert decode_wevibe_battery_frame(bytes.fromhex('040000f7251c1cf5021e000300001e0000140005')) == 97
+    assert decode_wevibe_battery_frame(bytes.fromhex('040000f7251c1cf5021e000300001e0000140005')) == 96
     assert decode_wevibe_battery_frame(bytes.fromhex('040000f6251d1df5021e000300001e0000140005')) == 96
     assert decode_wevibe_battery_frame(bytes.fromhex('010300f5251e00f5021e000100001e0000140005')) == 96
     assert decode_wevibe_battery_frame(bytes.fromhex('0400d8cb8e140040')) is None
@@ -77,3 +82,37 @@ async def test_reporting_uses_only_current_session_and_disappears_on_disconnect(
     assert not sensor.available
     coordinator._update_devices([])
     assert not sensor.available
+
+
+def test_classic_jive_reports_on_its_own_0_to_11_scale():
+    # Captured from a Jive while sending 15/15 (100%) and 11/15 (~70%).
+    assert decode_wevibe_info(bytes.fromhex('010340f094070b02'))['intensity'] == 100
+    assert decode_wevibe_info(bytes.fromhex('010370f094060802'))['intensity'] == 73
+    assert decode_wevibe_info(bytes.fromhex('040040f094070002'))['intensity'] == 0
+
+
+def test_sync2_status_frame_reports_both_motors_and_masks_off_motors():
+    name = 'Sync 2'
+    # Motor 1 at 30% (9/30), motor 2 switched off but remembering 30/30.
+    running = decode_wevibe_status_frame(bytes.fromhex('010300e925091ef5021e000100001e0000140005'), name)
+    assert running['internal_intensity'] == 30 and running['external_intensity'] == 0
+    assert running['intensity'] == 30 and running['battery'] == 91
+    both = decode_wevibe_status_frame(bytes.fromhex('010300e725151bf5021e000300001e0000140005'), name)
+    assert (both['internal_intensity'], both['external_intensity']) == (70, 90)
+    idle = decode_wevibe_status_frame(bytes.fromhex('040000e725151bf5021e000300001e0000140005'), name)
+    assert idle['intensity'] == 0 and idle['pattern'] == 'off'
+    # Without a name, the non-empty tail still identifies the Chorus family.
+    assert decode_wevibe_status_frame(bytes.fromhex('010300e725151bf5021e000300001e0000140005'))['external_intensity'] == 90
+
+
+def test_bond_status_frame_uses_eight_bit_steps():
+    # Bond reports Buttplug step + 3 (0-27 steps): 0x0b = 30%, 0x16 = 70%.
+    frame = '010300b50d{:02x}1ef4011e0001' + '00' * 8
+    assert decode_wevibe_status_frame(bytes.fromhex(frame.format(0x0B)))['intensity'] == 30
+    assert decode_wevibe_status_frame(bytes.fromhex(frame.format(0x16)), 'Bond')['intensity'] == 70
+    assert decode_wevibe_status_frame(bytes.fromhex(frame.format(0x1E)))['intensity'] == 100
+    # Single motor: the second level byte is ignored.
+    assert decode_wevibe_status_frame(bytes.fromhex(frame.format(0x11)))['external_intensity'] == 0
+    stopped = decode_wevibe_status_frame(bytes.fromhex('040000b50d111ef4011e0001' + '00' * 8))
+    assert stopped['intensity'] == 0
+    assert decode_wevibe_report(bytes.fromhex('0400d8cb8e140040'))['pattern'] == 'off'
