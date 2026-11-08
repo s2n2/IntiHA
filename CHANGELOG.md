@@ -1,3 +1,7 @@
+## 1.0.0 - First stable release (integration and engine 1.0.0)
+
+- Stable release of the fixes since 0.3.0b22: stops routed through the Buttplug driver (reliable repeated pulses), no protocol guessing for nameless devices (the Bond lockup), stable device names and `/intiha/devices` identity, external clients no longer dropped when one device reconnects, quiet keep-alive for idle devices, We-Vibe status/battery decoding (classic 0x04 frames and Sync 2 battery), and reduced status polling.
+
 ## 0.3.0b28 / engine 0.3.0b25 - Quiet keep-alive failures
 
 - Keep-alives use their own `keepalive` bridge operation. If one cannot be delivered (device switched off or out of range), the link is closed and reported as an ordinary disconnect instead of raising "A stop command could not be confirmed".
