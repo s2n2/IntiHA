@@ -109,10 +109,11 @@ def decode_wevibe_info(data: bytes) -> dict[str, Any] | None:
 def decode_wevibe_battery_frame(data: bytes) -> int | None:
     """Battery from newer (Chorus-family, e.g. Sync 2) 20-byte info frames.
 
-    Observed layout shares the classic prefix: header 0x04, pattern, then the
-    16-bit battery level low byte first. Motor intensities are not decoded.
+    Observed layout shares the classic prefix: header (0x04 idle, 0x01 seen
+    while running), pattern, then the 16-bit battery level low byte first.
+    Motor intensities are not decoded.
     """
-    if len(data) != 20 or data[0] != 0x04:
+    if len(data) != 20 or data[0] not in (0x01, 0x04):
         return None
     return round(((data[3] << 8) | data[2]) * 100 / 0xFFFF)
 

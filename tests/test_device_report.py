@@ -35,6 +35,7 @@ def test_current_firmware_header_0x04_needs_a_known_model_byte():
 def test_sync2_twenty_byte_frame_reports_battery_only():
     assert decode_wevibe_battery_frame(bytes.fromhex('040000f7251c1cf5021e000300001e0000140005')) == 97
     assert decode_wevibe_battery_frame(bytes.fromhex('040000f6251d1df5021e000300001e0000140005')) == 96
+    assert decode_wevibe_battery_frame(bytes.fromhex('010300f5251e00f5021e000100001e0000140005')) == 96
     assert decode_wevibe_battery_frame(bytes.fromhex('0400d8cb8e140040')) is None
 
 
