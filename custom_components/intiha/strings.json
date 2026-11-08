@@ -230,6 +230,20 @@
           "description": "Optional IntiHA configuration entry."
         }
       }
+    },
+    "capture_status": {
+      "name": "Capture status (research)",
+      "description": "Record a connected device's status values for a few seconds (reads and notifications only; nothing is written to the motor).",
+      "fields": {
+        "address": {
+          "name": "Bluetooth address",
+          "description": "Device address, e.g. D0:2E:AB:3A:D5:B4."
+        },
+        "seconds": {
+          "name": "Seconds",
+          "description": "How long to record (1-60 s)."
+        }
+      }
     }
   }
 }

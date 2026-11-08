@@ -756,6 +756,63 @@ class BleBridge:
             if not gave_up:
                 await status_update("disconnected", "Bluetooth status read session ended")
 
+    async def async_capture(self, address: str, seconds: float) -> list[dict[str, Any]]:
+        """Record status values for protocol research. Never writes to the motor.
+
+        Subscribes to every notify/indicate characteristic in the vendor
+        services (standard CCCD only) and reads the readable vendor status
+        characteristics twice a second, for ``seconds``. Returns the values
+        with timestamps; subscriptions are removed afterwards.
+        """
+        address = self._validate_address(address)
+        connection = self._connections.get(address)
+        if connection is None or not connection.client.is_connected:
+            raise BleBridgeError("That device is not connected through IntiHA")
+        seconds = min(60.0, max(1.0, float(seconds)))
+        loop = self._hass.loop
+        start = loop.time()
+        records: list[dict[str, Any]] = []
+
+        def note(kind: str, uuid: str, data: bytes) -> None:
+            records.append({"t": round(loop.time() - start, 3), "kind": kind,
+                            "char": uuid[:8], "hex": bytes(data).hex(" ")})
+
+        vendor = [
+            c for s in connection.client.services for c in s.characteristics
+            if not str(c.uuid).lower().endswith("-0000-1000-8000-00805f9b34fb")
+        ]
+        notify = [c for c in vendor if {"notify", "indicate"} & set(c.properties)
+                  and str(c.uuid).lower() not in connection.subscriptions]
+        readable = [c for c in vendor if "read" in c.properties]
+        subscribed = []
+        for characteristic in notify:
+            uuid = str(characteristic.uuid).lower()
+            try:
+                await connection.client.start_notify(
+                    characteristic, lambda _s, data, uuid=uuid: note("notify", uuid, data)
+                )
+                subscribed.append(characteristic)
+            except Exception as err:  # noqa: BLE001 - research only
+                records.append({"t": 0, "kind": "error", "char": uuid[:8], "hex": str(err)[:120]})
+        lock = self._locks.setdefault(address, asyncio.Lock())
+        try:
+            while loop.time() - start < seconds:
+                for characteristic in readable:
+                    async with lock:
+                        try:
+                            async with asyncio.timeout(2.0):
+                                data = await connection.client.read_gatt_char(characteristic)
+                            note("read", str(characteristic.uuid).lower(), data)
+                        except Exception:  # noqa: BLE001
+                            pass
+                await asyncio.sleep(0.5)
+        finally:
+            for characteristic in subscribed:
+                with suppress(Exception):
+                    await connection.client.stop_notify(characteristic)
+        _LOGGER.info("IntiHA status capture for %s: %s records", address, len(records))
+        return records
+
     @staticmethod
     def _cancel_device_report(connection: _Connection) -> None:
         for task in (connection.report_task, connection.battery_task):

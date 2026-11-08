@@ -5,7 +5,8 @@ from __future__ import annotations
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN, PLATFORMS
@@ -32,6 +33,27 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
                 await coordinator.async_scan()
             elif call.service == "reconnect":
                 await coordinator.async_reconnect()
+
+    async def capture_status(call: ServiceCall) -> ServiceResponse:
+        """Research aid: record a device's status values (read/subscribe only)."""
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            coordinator = getattr(entry, "runtime_data", None)
+            if coordinator is None:
+                continue
+            records = await coordinator.ble.async_capture(call.data["address"], call.data["seconds"])
+            return {"records": records}
+        raise HomeAssistantError("IntiHA is not loaded")
+
+    hass.services.async_register(
+        DOMAIN,
+        "capture_status",
+        capture_status,
+        schema=vol.Schema({
+            vol.Required("address"): cv.string,
+            vol.Optional("seconds", default=10): vol.All(vol.Coerce(float), vol.Range(min=1, max=60)),
+        }),
+        supports_response=SupportsResponse.ONLY,
+    )
 
     for action in ("stop_all", "scan", "reconnect"):
         hass.services.async_register(
