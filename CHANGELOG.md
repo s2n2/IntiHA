@@ -1,3 +1,7 @@
+## 2.0.0 - Integration and engine 2.0.0
+
+- Released alongside Ogg 2.0.0 (two servers at once). Includes engine 1.0.1: searches started by a client such as Ogg now update Home Assistant's Searching state.
+
 ## engine 1.0.1 - Searching state for client searches
 
 - A search started or stopped by a Buttplug client (for example Ogg's automatic IntiHA search) now updates Home Assistant's **Searching** state, not only searches started from Home Assistant.
