@@ -67,14 +67,29 @@ WEVIBE_PATTERNS = {
 }
 
 
+# Model byte (last byte of the info frame), from the buttplug.io We-Vibe docs.
+WEVIBE_MODEL_CODES = {
+    0x00: "default", 0x02: "jive", 0x10: "gala", 0x20: "verge", 0x30: "pivot",
+    0x35: "classic", 0x40: "ditto", 0x45: "4plus", 0x50: "sync", 0x60: "bloom",
+    0x70: "nova", 0x80: "wish", 0x90: "rave",
+}
+
+
 def decode_wevibe_info(data: bytes) -> dict[str, Any] | None:
-    """Decode only the documented, validated classic We-Vibe info frame.
+    """Decode the documented classic We-Vibe info frame.
+
+    Layout (buttplug.io): ``HH PP ZZ ZZ ?? WW XY MM`` - pattern, battery,
+    unknown, temperature, internal/external intensity nibbles, model. The docs
+    give header 0x01; current firmware (e.g. Ditto) answers with header 0x04
+    and the same layout, so 0x04 is accepted only with a known model byte.
 
     Values reflect device firmware's reported settings, not physical motor RPM.
     Pattern=off supersedes remembered intensity values; zero intensity alone
     does NOT mean the device is switched off.
     """
-    if len(data) != 8 or data[0] != 0x01:
+    if len(data) != 8 or data[0] not in (0x01, 0x04):
+        return None
+    if data[0] == 0x04 and data[7] not in WEVIBE_MODEL_CODES:
         return None
     pattern = data[1]
     internal = (data[6] >> 4) & 0x0F
@@ -86,6 +101,8 @@ def decode_wevibe_info(data: bytes) -> dict[str, Any] | None:
         "external_intensity": round(external * 100 / 15),
         "pattern": WEVIBE_PATTERNS.get(pattern, f"unknown_0x{pattern:02x}"),
         "pattern_code": pattern,
+        # 16-bit level, low byte first (0x0000 = 0%, 0xFFFF = 100%).
+        "battery": round(((data[3] << 8) | data[2]) * 100 / 0xFFFF),
     }
 
 
@@ -565,6 +582,7 @@ class BleBridge:
         failure_count = 0
         invalid_frames = 0
         last_frame = ""
+        last_battery: int | None = None
         gave_up = False
         reported_available = False
         last_status = None
@@ -663,6 +681,12 @@ class BleBridge:
                 failure_count = 0
                 invalid_frames = 0
                 reported_available = True
+                if decoded.get("battery") != last_battery:
+                    last_battery = decoded.get("battery")
+                    await self._emit_safely({
+                        "type": "battery", "address": address,
+                        "connection_id": connection.connection_id, "level": last_battery,
+                    })
                 await self._emit_safely({
                     "type": "device_report", "address": address,
                     "connection_id": connection.connection_id,

@@ -1,3 +1,9 @@
+## 0.3.0b25 - Device-reported intensity and battery for current We-Vibe firmware
+
+- Current classic-family firmware (e.g. Ditto) answers the info read with header `0x04` instead of the documented `0x01`, in the same layout. These frames are now decoded when the model byte is a known We-Vibe model, so **Device reported intensity/pattern** work again.
+- **Battery** is read from the same frame (bytes 2-3, low byte first) and shown on the device's battery sensor.
+- Chorus-family frames (e.g. Sync 2, 20 bytes) and 8-bit devices (Bond) remain unsupported for feedback.
+
 ## engine 0.3.0b23 - Model names from GATT
 
 - The hardware name given to Buttplug is whichever of the advertised and GATT names is a configured model name, so a device advertising an alias (e.g. "We-Vibe C5:1E") still identifies as its model (e.g. WeVibe Jive) instead of the generic WeVibe Device.

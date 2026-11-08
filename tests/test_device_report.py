@@ -13,13 +13,23 @@ def test_wevibe_info_decoder_validates_format_and_off_state():
     assert reading == {
         'intensity': 100, 'internal_intensity': 100,
         'external_intensity': 60, 'pattern': 'vibrate',
-        'pattern_code': 3,
+        'pattern_code': 3, 'battery': 0,
     }
     # Pattern=off is authoritative even if intensity bytes linger.
     stopped = decode_wevibe_info(bytes([1, 0, 0, 0, 0, 0, 0xFF, 2]))
     assert stopped['intensity'] == 0
     assert stopped['internal_intensity'] == 100
     assert decode_wevibe_info(bytes([1, 7, 0, 0, 0, 0, 0xF0, 2]))['pattern'] == 'wave'
+
+
+def test_current_firmware_header_0x04_needs_a_known_model_byte():
+    # Real Ditto frame: header 0x04, pattern off, battery cb d8, model 0x40.
+    ditto = decode_wevibe_info(bytes.fromhex('0400d8cb8e140040'))
+    assert ditto['pattern'] == 'off' and ditto['intensity'] == 0
+    assert ditto['battery'] == 80
+    assert decode_wevibe_info(bytes.fromhex('0400d8cb8e1400ff')) is None
+    # Chorus-family (Sync 2) 20-byte frames are a different format.
+    assert decode_wevibe_info(bytes.fromhex('040000f7251c1cf5021e000300001e0000140005')) is None
 
 
 async def test_reporting_uses_only_current_session_and_disappears_on_disconnect(coordinator):
