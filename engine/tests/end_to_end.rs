@@ -143,8 +143,8 @@ impl Harness {
                                         if let Some(plan)=stop_plans.remove(value["connection_id"].as_str().unwrap()) { captured.lock().unwrap().extend(plan); }
                                         json!({})
                                     }
-                                    "stop" => {
-                                        // Cached-stop fallback: replay the verified plan in place.
+                                    "stop" | "keepalive" => {
+                                        // Cached stop / keep-alive: replay the verified plan in place.
                                         let id = value["connection_id"].as_str().unwrap();
                                         if let Some(plan) = stop_plans.get(id) { captured.lock().unwrap().extend(plan.clone()); }
                                         json!({"verified":true,"connection_id":id})
@@ -478,8 +478,8 @@ async fn keepalive_resends_stop_only_while_idle() {
     let device = h.ready().await;
     let index = device["DeviceIndex"].clone();
     let mut events = h.events.subscribe();
-    // Idle after connecting: a keep-alive stop request must arrive.
-    Harness::wait(&mut events, |v| v["type"] == "request" && v["op"] == "stop").await;
+    // Idle after connecting: a keep-alive request must arrive.
+    Harness::wait(&mut events, |v| v["type"] == "request" && v["op"] == "keepalive").await;
 
     let (mut socket, _) = connect_async(&h.client_url).await.unwrap();
     macro_rules! request {
@@ -507,7 +507,7 @@ async fn keepalive_resends_stop_only_while_idle() {
     let stopped_while_running = tokio::time::timeout(Duration::from_millis(2500), async {
         loop {
             let v = events.recv().await.unwrap();
-            if v["type"] == "request" && v["op"] == "stop" { break; }
+            if v["type"] == "request" && v["op"] == "keepalive" { break; }
         }
     }).await;
     assert!(stopped_while_running.is_err(), "keep-alive stop must never interrupt output");
@@ -517,7 +517,7 @@ async fn keepalive_resends_stop_only_while_idle() {
     // After an explicit stop it is idle again and keep-alives resume.
     request!(json!({"StopDeviceCmd":{"Id":3,"DeviceIndex":index}}));
     let mut events = h.events.subscribe();
-    Harness::wait(&mut events, |v| v["type"] == "request" && v["op"] == "stop").await;
+    Harness::wait(&mut events, |v| v["type"] == "request" && v["op"] == "keepalive").await;
     assert_eq!(h.writes.lock().unwrap().last().unwrap()["data"], json!([15, 0, 0, 0, 0, 0, 0, 0]));
     socket.close(None).await.unwrap();
     h.finish().await;

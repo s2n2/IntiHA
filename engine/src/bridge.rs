@@ -847,16 +847,17 @@ impl Bridge {
         }
         let result = self
             .rpc(
-                json!({"op":"stop","address":session.address,"connection_id":session.id}),
+                json!({"op":"keepalive","address":session.address,"connection_id":session.id}),
                 Duration::from_secs(8),
             )
             .await;
         *session.last_activity.lock().unwrap() = Instant::now();
-        if result.is_err() {
-            self.invalidate(&session.id);
-            return false;
+        // A failed keep-alive is not an unconfirmed stop: the device was idle.
+        // Home Assistant closes a dead link itself and reports the disconnect.
+        if let Err(error) = &result {
+            tracing::debug!(address = %session.address, %error, "Keep-alive not delivered");
         }
-        true
+        result.is_ok()
     }
 
     /// Send the verified cached stop plan while keeping the BLE session alive.

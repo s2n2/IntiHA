@@ -125,6 +125,7 @@ _OPS = frozenset(
         "connect",
         "disconnect",
         "stop",
+        "keepalive",
         "read",
         "write",
         "subscribe",
@@ -386,6 +387,26 @@ class BleBridge:
                 stopped = await self._close_connection(connection, "requested")
                 if not stopped:
                     raise BleBridgeError("Stop could not be sent before disconnecting the device")
+                return {}
+            if op == "keepalive":
+                # Re-send the verified stop to an idle device to keep its link
+                # alive. A failure only means the link is gone: close it and
+                # report a disconnect, never an unconfirmed stop alarm.
+                if not connection.stop_plan:
+                    raise BleBridgeError("No verified stop plan is available for this connection")
+                try:
+                    await self._send_stop_plan(connection)
+                except BaseException as err:
+                    if self._connections.get(address) is connection:
+                        self._connections.pop(address)
+                    await self._disconnect_client(connection.client)
+                    await self._emit_safely({
+                        "type": "disconnected", "address": connection.address,
+                        "connection_id": connection.connection_id, "reason": "keepalive_failed",
+                    })
+                    if isinstance(err, asyncio.CancelledError):
+                        raise
+                    raise BleBridgeError("Keep-alive write failed; link closed") from err
                 return {}
             if op == "stop":
                 if not connection.stop_plan:

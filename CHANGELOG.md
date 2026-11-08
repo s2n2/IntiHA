@@ -1,3 +1,7 @@
+## 0.3.0b28 / engine 0.3.0b25 - Quiet keep-alive failures
+
+- Keep-alives use their own `keepalive` bridge operation. If one cannot be delivered (device switched off or out of range), the link is closed and reported as an ordinary disconnect instead of raising "A stop command could not be confirmed".
+
 ## 0.3.0b27 / engine 0.3.0b24 - Silent keep-alive, Sync 2 battery
 
 - **Keep-alive:** a connected device whose last output was a stop (or zero) and that has had no Bluetooth traffic for 20 s is sent its own verified stop packet again. This keeps idle links alive with no movement. It is never sent while a device is running and is ordered behind real commands on the same per-device lock. (Buttplug's built-in keepalive is not used: its connect-time stop is deduplicated against IntiHA's stop verification.)
