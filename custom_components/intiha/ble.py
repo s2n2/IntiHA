@@ -59,6 +59,11 @@ REPORT_NOTIFY_REFRESH = 30.0
 REPORT_BURST_SETTLE = 0.15
 # Poll interval while a non-notifying device is being driven.
 REPORT_ACTIVE_INTERVAL = 2.0
+# Chorus (Sync 2) firmware ignores the level in the command that switches a
+# motor on and runs it at its remembered level instead (measured: sent 40%,
+# reported 100%). Repeating the identical command shortly after applies it.
+WEVIBE_TX = "f000c000-0451-4000-b000-000000000000"
+CHORUS_REPEAT_DELAY = 0.15
 REPORT_MAX_INVALID_FRAMES = 3
 # Standard Bluetooth Battery Level (read-only). Upstream We-Vibe profiles
 # declare no battery sensor, so read it directly when the device exposes it.
@@ -229,6 +234,8 @@ class _Connection:
     # optional tap the research capture uses to see them too.
     report_notify: str | None = None
     report_tap: Callable[[bytes], None] | None = None
+    # Last Chorus motor command written (for the motor-start repeat).
+    chorus_last: bytes = b""
 
 
 class BleBridge:
@@ -543,6 +550,7 @@ class BleBridge:
                         await connection.client.write_gatt_char(
                             characteristic, write.data, response=write.response
                         )
+                        self._after_chorus_write(connection, uuid, bytes(write.data), write.response)
                     elif op == "subscribe" and uuid not in connection.subscriptions:
                         # Register first: a device may notify synchronously while
                         # start_notify is awaiting its acknowledgement.
@@ -831,6 +839,40 @@ class BleBridge:
             })
             if not gave_up:
                 await status_update("disconnected", "Bluetooth status read session ended")
+
+    def _after_chorus_write(
+        self, connection: _Connection, uuid: str, data: bytes, response: bool
+    ) -> None:
+        """Schedule one identical repeat when a Chorus command switches a motor on."""
+        if uuid != WEVIBE_TX or not any(n in connection.name.lower() for n in CHORUS_NAMES):
+            return
+        previous, connection.chorus_last = connection.chorus_last, data
+        if len(data) != 8 or data[:3] != bytes((0x0F, 0x03, 0x00)):
+            return  # stop / other packets: never repeated
+        before = previous[5] if len(previous) == 8 and previous[1] == 0x03 else 0
+        if not data[5] & ~before & 0x03:
+            return
+        self._spawn(self._repeat_chorus(connection, data, response), "Sync 2 motor start")
+
+    async def _repeat_chorus(self, connection: _Connection, data: bytes, response: bool) -> None:
+        await asyncio.sleep(CHORUS_REPEAT_DELAY)
+        lock = self._locks.setdefault(connection.address, asyncio.Lock())
+        async with lock:
+            # Only if nothing else (a new level, a STOP) was sent meanwhile.
+            if (
+                self._connections.get(connection.address) is not connection
+                or not connection.client.is_connected
+                or connection.chorus_last != data
+                or not self._running or self._resetting
+            ):
+                return
+            characteristic = connection.client.services.get_characteristic(WEVIBE_TX)
+            if characteristic is None:
+                return
+            with suppress(Exception):
+                async with asyncio.timeout(IO_TIMEOUT):
+                    connection.last_write = self._hass.loop.time()
+                    await connection.client.write_gatt_char(characteristic, data, response=response)
 
     async def _watch_device_report(self, connection: _Connection, characteristic: Any) -> None:
         """Follow status notifications (newer firmware sends one on every change).
