@@ -339,12 +339,73 @@ impl App {
     /// Stop through the official driver (management server), keeping the BLE
     /// link. Falls back to the verified cached stop if the driver path fails.
     async fn soft_stop(&self, index: Option<u32>) -> Result<(), String> {
+        if self.stop_touches_unready(index) {
+            return self.stop_ready_only(index).await;
+        }
         let message = match index {
             Some(index) => json!({"StopDeviceCmd":{"Id":1,"DeviceIndex":index}}),
             None => json!({"StopAllDevices":{"Id":1}}),
         };
         let upstream = tokio::time::timeout(Duration::from_secs(6), self.v3(message)).await;
         self.finish_driver_stop(index, matches!(upstream, Ok(Ok(_)))).await
+    }
+
+    /// True when a stop for `index` (None = every device) would reach a
+    /// connected device that has not finished its safe-stop verification.
+    ///
+    /// Such a device has never accepted a movement command on this
+    /// connection, so it is already stopped. Its stop must NOT be offered to
+    /// the official driver: the driver deduplicates a command equal to the
+    /// feature's last one, so an early stop makes the later stop-plan capture
+    /// generate zero writes ("stop-plan generation did not settle") and the
+    /// device can never become ready. Clients such as Ogg stop every device as
+    /// soon as it is announced, which hit this on every connection for
+    /// protocols whose stop is captured from the driver (e.g. Lovense).
+    fn stop_touches_unready(&self, index: Option<u32>) -> bool {
+        let unready = |session: &Arc<Session>| {
+            session.connected.load(Ordering::SeqCst) && !session.ready.load(Ordering::SeqCst)
+        };
+        match index {
+            Some(index) => self
+                .manager
+                .device_info(index)
+                .and_then(|info| self.bridge.session_for(info.identifier().address()))
+                .is_some_and(|session| unready(&session)),
+            None => self.bridge.all_sessions().iter().any(unready),
+        }
+    }
+
+    /// Stop through the official driver, but only the devices that are ready.
+    /// Devices still establishing their safe stopped state are left untouched.
+    async fn stop_ready_only(&self, index: Option<u32>) -> Result<(), String> {
+        if index.is_some() {
+            // The single target is unready: nothing has been commanded yet.
+            return Ok(());
+        }
+        *self.bridge.manual_deadline.lock().unwrap() = None;
+        let list = self.v3(json!({"RequestDeviceList":{"Id":1}})).await?;
+        let mut result = Ok(());
+        for device in list["DeviceList"]["Devices"].as_array().into_iter().flatten() {
+            let Some(index) = device["DeviceIndex"].as_u64().and_then(|i| u32::try_from(i).ok())
+            else {
+                continue;
+            };
+            if self.stop_touches_unready(Some(index)) {
+                continue;
+            }
+            let upstream = tokio::time::timeout(
+                Duration::from_secs(6),
+                self.v3(json!({"StopDeviceCmd":{"Id":1,"DeviceIndex":index}})),
+            )
+            .await;
+            if let Err(error) = self
+                .finish_driver_stop(Some(index), matches!(upstream, Ok(Ok(_))))
+                .await
+            {
+                result = Err(error);
+            }
+        }
+        result
     }
 
     /// Complete a stop that was first offered to the official driver.
@@ -1163,10 +1224,16 @@ async fn client_connection(app: Arc<App>, mut socket: WebSocket) {
                                             // stop behind its back leaves its last-command cache at the
                                             // old level, so the next identical command (every repeated
                                             // pulse) would be silently skipped.
-                                            let upstream = tokio::time::timeout(
-                                                Duration::from_secs(6), server.parse_message(message),
-                                            ).await;
-                                            let result = app.finish_driver_stop(index, matches!(upstream, Ok(Ok(_)))).await;
+                                            // A device still verifying its safe stop is kept
+                                            // away from the driver (see stop_touches_unready).
+                                            let result = if app.stop_touches_unready(index) {
+                                                app.stop_ready_only(index).await
+                                            } else {
+                                                let upstream = tokio::time::timeout(
+                                                    Duration::from_secs(6), server.parse_message(message),
+                                                ).await;
+                                                app.finish_driver_stop(index, matches!(upstream, Ok(Ok(_)))).await
+                                            };
                                             let response = match result {
                                                 Ok(()) => Message::Text(json!([{"Ok":{"Id":id}}]).to_string().into()),
                                                 Err(error) => error_message(id,&format!("Stop could not be confirmed: {error}")),
@@ -1423,6 +1490,30 @@ mod tests {
         assert_eq!(commanded_vibration_levels(&json!({"ScalarCmd":{"DeviceIndex":1,"Scalars":[
             {"Index":0,"Scalar":2.0,"ActuatorType":"Vibrate"}
         ]}})), None);
+    }
+
+    #[tokio::test]
+    async fn stop_all_skips_the_driver_while_a_device_is_unready() {
+        let app = App::new(test_config()).await.unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let epoch = app.bridge.attach(tx);
+        assert!(!app.stop_touches_unready(None));
+        let session = Arc::new(crate::bridge::Session::new(
+            "AA:BB:CC:DD:EE:FF",
+            "one",
+            false,
+        ));
+        app.bridge.register(session.clone());
+        // Connected but not yet verified: a stop-all must not reach the driver
+        // or the Bluetooth link, and must still succeed.
+        assert!(app.stop_touches_unready(None));
+        app.soft_stop(None).await.unwrap();
+        assert!(rx.try_recv().is_err());
+        assert!(session.connected.load(Ordering::SeqCst));
+        session.ready.store(true, Ordering::SeqCst);
+        assert!(!app.stop_touches_unready(None));
+        app.bridge.detach(epoch);
+        app.shutdown().await;
     }
 
     #[tokio::test]
