@@ -660,3 +660,55 @@ async def test_other_discovered_devices_are_not_forced_to_pair(coordinator):
     assert not coordinator._requires_pairing(ADDRESS)
     coordinator._require_pairing(ADDRESS)
     assert coordinator._requires_pairing(ADDRESS)
+
+
+async def test_idle_switches_off_after_the_idle_time_with_nothing_playing(coordinator, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("custom_components.intiha.coordinator.time.monotonic", lambda: now[0])
+    coordinator.config["idle_off_minutes"] = 15
+    await coordinator.async_set_enabled(True)
+    coordinator._update_devices([device_description()])
+
+    now[0] += 14 * 60
+    assert not await coordinator._async_idle_check()
+    assert coordinator.enabled
+
+    now[0] += 2 * 60
+    assert await coordinator._async_idle_check()
+    assert not coordinator.enabled and coordinator.idle_off
+    coordinator.ble.async_disconnect_all.assert_awaited()
+
+    # Switching on again clears it and starts the clock afresh.
+    await coordinator.async_set_enabled(True)
+    assert coordinator.enabled and not coordinator.idle_off
+    assert not await coordinator._async_idle_check()
+
+
+async def test_idle_timer_waits_while_something_plays(coordinator, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("custom_components.intiha.coordinator.time.monotonic", lambda: now[0])
+    coordinator.config["idle_off_minutes"] = 10
+    await coordinator.async_set_enabled(True)
+    coordinator._update_devices([device_description()])
+    coordinator.devices[ADDRESS].outputs[0] = 40
+
+    now[0] += 60 * 60
+    assert not await coordinator._async_idle_check()
+    assert coordinator.enabled
+
+    # It stops: the idle time counts from the last moment it played.
+    coordinator.devices[ADDRESS].outputs[0] = 0
+    now[0] += 9 * 60
+    assert not await coordinator._async_idle_check()
+    now[0] += 2 * 60
+    assert await coordinator._async_idle_check()
+
+
+async def test_idle_off_can_be_turned_off(coordinator, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("custom_components.intiha.coordinator.time.monotonic", lambda: now[0])
+    coordinator.config["idle_off_minutes"] = 0
+    await coordinator.async_set_enabled(True)
+    now[0] += 24 * 60 * 60
+    assert not await coordinator._async_idle_check()
+    assert coordinator.enabled

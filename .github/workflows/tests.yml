@@ -1,0 +1,18 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Home Assistant's test harness
+        run: pip install -r requirements-ha-test.txt -r requirements-dev.txt
+      - name: Integration tests (real Home Assistant; not the compiled-engine system tests)
+        run: pytest -q -m "not system" tests

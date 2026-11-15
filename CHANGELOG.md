@@ -1,3 +1,8 @@
+## 2.4.0 - Switch off when idle
+
+- **Idle switch-off:** with nothing playing for 15 minutes (Configure > Behaviour > "Switch off after idle", 0 = never), IntiHA switches itself off: toys are stopped and disconnected so they can sleep. A connected toy is kept awake by IntiHA's keep-alive and battery reads, so one left connected drains its battery. Switch IntiHA on again to reconnect.
+- Tests run on GitHub Actions.
+
 ## 2.0.0 - Integration and engine 2.0.0
 
 - Released alongside Ogg 2.0.0 (two servers at once). Includes engine 1.0.1: searches started by a client such as Ogg now update Home Assistant's Searching state.

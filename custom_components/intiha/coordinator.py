@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 import re
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -28,15 +29,17 @@ from .const import (
     CONF_AUTO_RECONNECT,
     CONF_CONTROL_TIMEOUT,
     CONF_ENGINE_URL,
+    CONF_IDLE_OFF,
     CONF_SCAN_DURATION,
     DEFAULT_CONTROL_TIMEOUT,
+    DEFAULT_IDLE_OFF,
     DEFAULT_SCAN_DURATION,
     DOMAIN,
     MAX_BLE_REQUESTS,
     MAX_KNOWN_DEVICES,
 )
-from .security import profile_requests_pairing
 from .retry_policy import classify_ble_failure
+from .security import profile_requests_pairing
 
 _LOGGER = logging.getLogger(__name__)
 _MAC = re.compile(r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$")
@@ -164,6 +167,10 @@ class IntiHACoordinator:
         self.version: str | None = None
         self.last_error: str | None = None
         self.stop_uncertain = False
+        # When something last played (or IntiHA was switched on): after the
+        # idle time with nothing playing, IntiHA switches itself off.
+        self._active_at = time.monotonic()
+        self.idle_off = False            # the last switch-off was the idle timer's
         self._stop_failure_generation = 0
         self._uncertain_addresses: set[str] = set()
         self.discovered: dict[str, dict[str, Any]] = {}
@@ -419,9 +426,36 @@ class IntiHACoordinator:
         await asyncio.gather(*self._background_tasks, *self._request_tasks, return_exceptions=True)
         await self.ble.async_stop()
 
-    async def async_set_enabled(self, enabled: bool) -> None:
+    @property
+    def idle_off_minutes(self) -> int:
+        try:
+            return max(0, int(self.config.get(CONF_IDLE_OFF, DEFAULT_IDLE_OFF)))
+        except (TypeError, ValueError):
+            return DEFAULT_IDLE_OFF
+
+    def _touch(self) -> None:
+        self._active_at = time.monotonic()
+
+    async def _async_idle_check(self) -> bool:
+        """Switch off after the idle time with nothing playing. True = switched off."""
+        minutes = self.idle_off_minutes
+        if not self.enabled or not minutes:
+            return False
+        if any(value > 0 for device in self.devices.values() for value in device.outputs.values()):
+            self._touch()
+            return False
+        if time.monotonic() - self._active_at < minutes * 60:
+            return False
+        _LOGGER.info("Nothing has played for %s minutes: switching IntiHA off so toys can sleep", minutes)
+        await self.async_set_enabled(False, idle=True)
+        return True
+
+    async def async_set_enabled(self, enabled: bool, *, idle: bool = False) -> None:
         async with self._state_lock:
             self.enabled = enabled
+            self.idle_off = bool(idle and not enabled)
+            if enabled:
+                self._touch()
             self._save()
             self._notify()
             if not enabled:
@@ -643,6 +677,8 @@ class IntiHACoordinator:
             and device.connection_id == old_connection_id
         ):
             device.outputs[index] = percentage
+            if percentage > 0:
+                self._touch()
             self._notify()
 
     async def _async_command(
@@ -858,6 +894,8 @@ class IntiHACoordinator:
             if device.outputs.get(index) != value:
                 device.outputs[index] = value
                 changed = True
+            if value > 0:
+                self._touch()
         if changed:
             self._notify_intensity(address)
 
@@ -1131,6 +1169,8 @@ class IntiHACoordinator:
 
     async def _async_tick(self, _now: datetime) -> None:
         self._notify()
+        if await self._async_idle_check():
+            return
         if not self.enabled or not self.engine_connected or self.client_connected:
             return
         for device in tuple(self.devices.values()):

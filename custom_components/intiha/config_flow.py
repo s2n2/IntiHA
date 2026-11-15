@@ -20,9 +20,11 @@ from .const import (
     CONF_AUTO_RECONNECT,
     CONF_CONTROL_TIMEOUT,
     CONF_ENGINE_URL,
+    CONF_IDLE_OFF,
     CONF_SCAN_DURATION,
     DEFAULT_CONTROL_TIMEOUT,
     DEFAULT_ENGINE_URL,
+    DEFAULT_IDLE_OFF,
     DEFAULT_SCAN_DURATION,
     DOMAIN,
 )
@@ -214,6 +216,10 @@ class IntiHAOptionsFlow(config_entries.OptionsFlow):
                         CONF_SCAN_DURATION,
                         default=current.get(CONF_SCAN_DURATION, DEFAULT_SCAN_DURATION),
                     ): vol.All(vol.Coerce(int), vol.Range(min=5, max=120)),
+                    vol.Required(
+                        CONF_IDLE_OFF,
+                        default=current.get(CONF_IDLE_OFF, DEFAULT_IDLE_OFF),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=720)),
                 }
             ),
         )

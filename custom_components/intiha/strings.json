@@ -48,11 +48,13 @@
         "data": {
           "auto_reconnect": "Automatically reconnect devices",
           "control_timeout": "Stop manual controls after (seconds)",
-          "scan_duration": "Search duration (seconds)"
+          "scan_duration": "Search duration (seconds)",
+          "idle_off_minutes": "Switch off after idle (minutes)"
         },
         "data_description": {
           "control_timeout": "Home Assistant movement commands expire after this time without a new movement command. External clients use their own negotiated heartbeat.",
-          "auto_reconnect": "Reconnect a device if its connection drops, using an available active Bluetooth proxy. New supported devices always connect automatically."
+          "auto_reconnect": "Reconnect a device if its connection drops, using an available active Bluetooth proxy. New supported devices always connect automatically.",
+          "idle_off_minutes": "With nothing playing for this long, IntiHA switches itself off: toys are stopped and disconnected so they can sleep (a connected toy is kept awake and drains its battery). Switch it on again to reconnect. 0 = never."
         }
       }
     },
