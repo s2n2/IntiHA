@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers import entity_registry as er
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -140,6 +141,16 @@ class DeviceState:
     learned_name: str = ""
     protocols: list[str] = field(default_factory=list)
     connect_enabled: bool = True
+    # A stroker's last commanded position (0-100 %), from the client's moves.
+    position: float | None = None
+
+    def stroke_only(self) -> bool | None:
+        """Moves to positions only (e.g. The Handy). None until its features are known."""
+        if not self.messages:
+            return None
+        linear = self.messages.get("LinearCmd")
+        levels = any(self.messages.get(name) for name in ("ScalarCmd", "RotateCmd", "OscillateCmd", "VibrateCmd"))
+        return bool(linear) and not levels
 
     def scalar_features(self) -> list[dict[str, Any]]:
         """Expose vibration controls only when advertised by the real engine."""
@@ -726,6 +737,9 @@ class IntiHACoordinator:
         elif kind == "output_level":
             self._update_commanded_intensity(message)
             return  # High-frequency updates only refresh this device's sensor.
+        elif kind == "output_position":
+            self._update_commanded_position(message)
+            return
         elif kind == "device_status":
             address = str(message.get("address", "")).upper()
             device = self.devices.get(address)
@@ -899,6 +913,56 @@ class IntiHACoordinator:
         if changed:
             self._notify_intensity(address)
 
+    def _update_commanded_position(self, message: dict[str, Any]) -> None:
+        """A stroker's commanded position, only for the current live BLE session."""
+        address = str(message.get("address", "")).upper()
+        device = self.devices.get(address)
+        if (
+            not self.enabled
+            or not self.engine_connected
+            or device is None
+            or not device.connected
+            or not device.connection_id
+            or message.get("connection_id") != device.connection_id
+        ):
+            return
+        positions = message.get("positions")
+        if not isinstance(positions, list) or not positions or not isinstance(positions[0], dict):
+            return
+        value = positions[0].get("percent")
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 100:
+            return
+        self._touch()
+        if device.position != value:
+            device.position = value
+            self._notify_intensity(address)
+
+    def _apply_visibility(self) -> None:
+        """Hide the rows a device can never fill (a stroker has no vibration,
+        feedback or battery; a vibrator has no position). Only rows IntiHA hid
+        itself are changed back; a user's own choice is left alone."""
+        try:
+            registry = er.async_get(self.hass)
+            entry_id = self.entry.entry_id
+        except Exception:  # noqa: BLE001 - cosmetic; never break an inventory update
+            return
+        for address, device in self.devices.items():
+            stroker = device.stroke_only()
+            if stroker is None:
+                continue
+            hide = {"position"} if not stroker else {"intensity", "reported_intensity", "reported_pattern", "feedback_status"}
+            if stroker and device.battery_index() is None:
+                hide.add("battery")
+            for key in ("position", "intensity", "reported_intensity", "reported_pattern", "feedback_status", "battery"):
+                entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry_id}_{address}_{key}")
+                entry = entity_id and registry.async_get(entity_id)
+                if not entry:
+                    continue
+                if key in hide and entry.hidden_by is None:
+                    registry.async_update_entity(entity_id, hidden_by=er.RegistryEntryHider.INTEGRATION)
+                elif key not in hide and entry.hidden_by is er.RegistryEntryHider.INTEGRATION:
+                    registry.async_update_entity(entity_id, hidden_by=None)
+
     def _register_device(self, address: str, name: str) -> DeviceState | None:
         """Remember a supported device identified by the official engine."""
         if not _MAC.fullmatch(address):
@@ -977,6 +1041,8 @@ class IntiHACoordinator:
                 device.outputs.clear()
                 self._clear_reported(device)
                 device.battery = None
+                device.position = None
+        self._apply_visibility()
         self._save()
 
     def _update_sensor(self, message: dict[str, Any]) -> None:

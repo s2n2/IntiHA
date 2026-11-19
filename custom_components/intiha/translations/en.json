@@ -199,6 +199,9 @@
           "receiving_external_commands": "Receiving external output",
           "manual_control_ready": "Connected; Home Assistant control"
         }
+      },
+      "position": {
+        "name": "Commanded position"
       }
     }
   },

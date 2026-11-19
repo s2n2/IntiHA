@@ -55,3 +55,13 @@ def test_invalid_device(field, value):
     raw = device(); raw[field] = value
     with pytest.raises(ProtocolError):
         Description.parse(raw)
+
+
+def test_stroke_only_is_known_from_the_device_features():
+    from custom_components.intiha.coordinator import DeviceState
+
+    handy = DeviceState("78:1C:3C:13:84:42", "The Handy", messages={"LinearCmd": [{"StepCount": 100}], "StopDeviceCmd": {}})
+    vibe = DeviceState("50:F1:4A:61:2F:2B", "Toy", messages={"ScalarCmd": [{"StepCount": 20, "ActuatorType": "Vibrate"}]})
+    assert handy.stroke_only() is True
+    assert vibe.stroke_only() is False
+    assert DeviceState("00:11:22:33:44:55", "New").stroke_only() is None

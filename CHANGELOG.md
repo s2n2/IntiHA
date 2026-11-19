@@ -1,3 +1,9 @@
+## 2.6.0 - Stroker position (engine 2.2.0)
+
+- **Commanded position:** a stroker such as The Handy gets a "Commanded position" sensor showing where the client (for example Ogg) last sent it, 0-100 %. It is the commanded move, not a reading: the Handy reports nothing back.
+- **Rows it can't fill are hidden:** for a stroker, Commanded intensity, Device-reported intensity and pattern, Device feedback status and (when it has no battery reading) Battery are hidden; a vibrator hides Commanded position. Only rows IntiHA hid itself are ever shown again; your own choices are kept.
+- Needs both parts: the IntiHA integration 2.6.0 (HACS) and the IntiHA Proxy Engine app 2.2.0.
+
 ## 2.5.0 - The Handy and other strokers connect (engine 2.1.0)
 
 - **Strokers connect:** a device that only moves to positions (for example The Handy) has no motor to switch off, so the official stop produces no Bluetooth write. IntiHA's safety check waited for one, refused control ("official stop-plan generation did not settle") and dropped the link, again and again. Now such a device's safe stop is a **hold**: Stop sends no further moves and it halts at the end of its current move. Vibrators keep the verified motor-off stop as before.

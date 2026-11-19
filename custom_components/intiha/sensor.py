@@ -58,6 +58,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             for key in (
                 "device_status",
                 "intensity",
+                "position",
                 "command_diagnostic",
                 "reported_intensity",
                 "reported_pattern",
@@ -80,6 +81,11 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
         if key in ("intensity", "reported_intensity"):
             self._attr_entity_category = None
             self._attr_icon = "mdi:vibrate"
+            self._attr_native_unit_of_measurement = PERCENTAGE
+            self._attr_suggested_display_precision = 0
+        elif key == "position":
+            self._attr_entity_category = None
+            self._attr_icon = "mdi:arrow-up-down"
             self._attr_native_unit_of_measurement = PERCENTAGE
             self._attr_suggested_display_precision = 0
         elif key == "command_diagnostic":
@@ -131,7 +137,7 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        if self.address and self.key in ("intensity", "command_diagnostic", "reported_intensity", "reported_pattern", "feedback_status"):
+        if self.address and self.key in ("intensity", "position", "command_diagnostic", "reported_intensity", "reported_pattern", "feedback_status"):
             self.async_on_remove(
                 self.coordinator.add_intensity_listener(
                     self.address, self.async_write_ha_state
@@ -140,6 +146,9 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
+        if self.key == "position" and self.address:
+            device = self.coordinator.devices[self.address]
+            return self.coordinator.enabled and self.coordinator.engine_connected and device.connected
         if self.key in ("intensity", "reported_intensity", "reported_pattern") and self.address:
             device = self.coordinator.devices[self.address]
             ready = self.coordinator.enabled and self.coordinator.engine_connected and device.connected
@@ -165,6 +174,7 @@ class IntiHASensor(IntiHAEntity, SensorEntity):
                 )
             return {
                 "intensity": max(device.outputs.values(), default=0),
+                "position": device.position,
                 "reported_intensity": device.reported_intensity,
                 "reported_pattern": device.reported_pattern,
                 "feedback_status": device.feedback_status,

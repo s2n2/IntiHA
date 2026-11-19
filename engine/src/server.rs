@@ -238,6 +238,7 @@ impl App {
 
     fn report_intensity(&self, command: &Value) {
         let Some((index, levels)) = commanded_vibration_levels(command) else {
+            self.report_position(command);
             return;
         };
         let Some(info) = self.manager.device_info(index) else {
@@ -275,6 +276,42 @@ impl App {
             "address": address,
             "connection_id": session.id,
             "levels": readings,
+        })) {
+            last_emit.insert(address, (session.id.clone(), now));
+        }
+    }
+
+    /// Mirror an accepted stroker move (LinearCmd) as its commanded position.
+    fn report_position(&self, command: &Value) {
+        let Some((index, positions)) = commanded_positions(command) else {
+            return;
+        };
+        let Some(info) = self.manager.device_info(index) else {
+            return;
+        };
+        let address = info.identifier().address().clone();
+        let Some(session) = self.bridge.session_for(&address) else {
+            return;
+        };
+        if !session.connected.load(Ordering::SeqCst) || !session.ready.load(Ordering::SeqCst) {
+            return;
+        }
+        let now = Instant::now();
+        let mut last_emit = self.last_intensity_emit.lock().unwrap();
+        if last_emit.get(&address).is_some_and(|(connection_id, old)| {
+            connection_id == &session.id && now.saturating_duration_since(*old) < Duration::from_millis(250)
+        }) {
+            return;
+        }
+        let readings: Vec<Value> = positions
+            .into_iter()
+            .map(|(axis, percent, duration)| json!({"index": axis, "percent": percent, "duration_ms": duration}))
+            .collect();
+        if self.bridge.try_send_telemetry(json!({
+            "type": "output_position",
+            "address": address,
+            "connection_id": session.id,
+            "positions": readings,
         })) {
             last_emit.insert(address, (session.id.clone(), now));
         }
@@ -982,6 +1019,27 @@ fn one_message_name(value: &Value) -> Result<&str, String> {
     }
     Ok(object.keys().next().unwrap())
 }
+/// LinearCmd vectors as (axis, position %, duration ms).
+fn commanded_positions(message: &Value) -> Option<(u32, Vec<(u32, f64, u64)>)> {
+    let object = message.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    let command = object.get("LinearCmd")?;
+    let index = u32::try_from(command.get("DeviceIndex")?.as_u64()?).ok()?;
+    let mut positions = Vec::new();
+    for vector in command.get("Vectors")?.as_array()?.iter().take(8) {
+        let axis = u32::try_from(vector.get("Index")?.as_u64()?).ok()?;
+        let position = vector.get("Position")?.as_f64()?;
+        let duration = vector.get("Duration")?.as_u64()?;
+        if !position.is_finite() || !(0.0..=1.0).contains(&position) {
+            return None;
+        }
+        positions.push((axis, (position * 100.0).round(), duration));
+    }
+    if positions.is_empty() { None } else { Some((index, positions)) }
+}
+
 fn is_movement(name: &str) -> bool {
     matches!(
         name,
@@ -1499,6 +1557,15 @@ pub(crate) fn is_stroke_only(device: &Value) -> bool {
 mod stroke_only_tests {
     use super::is_stroke_only;
     use serde_json::json;
+
+    #[test]
+    fn linear_moves_become_commanded_positions() {
+        let cmd = json!({"LinearCmd": {"Id": 3, "DeviceIndex": 2, "Vectors": [{"Index": 0, "Duration": 400, "Position": 0.5}]}});
+        assert_eq!(super::commanded_positions(&cmd), Some((2, vec![(0, 50.0, 400)])));
+        let bad = json!({"LinearCmd": {"Id": 3, "DeviceIndex": 2, "Vectors": [{"Index": 0, "Duration": 400, "Position": 1.5}]}});
+        assert_eq!(super::commanded_positions(&bad), None);
+        assert_eq!(super::commanded_positions(&json!({"ScalarCmd": {}})), None);
+    }
 
     #[test]
     fn a_stroker_is_stroke_only() {
