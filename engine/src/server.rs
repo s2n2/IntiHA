@@ -594,7 +594,8 @@ impl App {
                 && !session.ready.load(Ordering::SeqCst)
                 && self.bridge.enabled.load(Ordering::SeqCst)
             {
-                match self.prepare_safe_stop(index, &session).await {
+                let stroke_only = is_stroke_only(device);
+                match self.prepare_safe_stop(index, &session, stroke_only).await {
                     Ok(()) if self.bridge.mark_ready(&session) => {
                         self.bridge
                             .device_status(&address, &session.id, "ready", None)
@@ -633,10 +634,22 @@ impl App {
         Ok(())
     }
 
-    async fn prepare_safe_stop(&self, index: u64, session: &Arc<Session>) -> Result<(), String> {
+    async fn prepare_safe_stop(
+        &self,
+        index: u64,
+        session: &Arc<Session>,
+        stroke_only: bool,
+    ) -> Result<(), String> {
         self.bridge
             .device_status(&session.address, &session.id, "verifying_stop", None)
             .await;
+        // A stroker (position moves only, e.g. The Handy) has no motor to
+        // switch off: the official driver's stop produces no Bluetooth write,
+        // so there is nothing to capture. Its safe stop is to hold: no
+        // further move is sent and it halts at the end of the current one.
+        if stroke_only {
+            return self.verify_hold(session).await;
+        }
         // A known We-Vibe profile has a protocol-defined motor-off packet.
         // Do NOT first submit a redundant StopDeviceCmd and wait for the
         // upstream command queue to become idle: that was the v0.2.3 failure.
@@ -719,6 +732,36 @@ impl App {
             return Err("upstream stop did not provide 1 to 16 reusable GATT writes".into());
         }
         Ok(writes)
+    }
+
+    /// Confirm a hold stop for a stroke-only device on this exact live link.
+    async fn verify_hold(&self, session: &Arc<Session>) -> Result<(), String> {
+        let _io = session.io_lock.lock().await;
+        if !session.connected.load(Ordering::SeqCst)
+            || self.bridge.session(&session.id).is_none()
+            || !self.bridge.enabled.load(Ordering::SeqCst)
+            || self.bridge.reconnect_paused.load(Ordering::SeqCst)
+        {
+            return Err("connection was revoked before the hold was confirmed".into());
+        }
+        let result = self
+            .bridge
+            .rpc(
+                json!({"op":"prepare_hold","address":session.address,"connection_id":session.id}),
+                Duration::from_secs(10),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if result["verified"] != true
+            || result["hold"] != true
+            || result["connection_id"].as_str() != Some(session.id.as_str())
+        {
+            return Err("stroker hold was not acknowledged; update the IntiHA HACS integration to 2.5.0 or later".into());
+        }
+        if !session.connected.load(Ordering::SeqCst) || self.bridge.session(&session.id).is_none() {
+            return Err("connection was revoked while confirming the hold".into());
+        }
+        Ok(())
     }
 
     async fn verify_stop_plan(
@@ -1432,5 +1475,43 @@ mod tests {
         let result=app.administer(json!({"op":"command","_control_epoch":1,"message":{"ScalarCmd":{"Id":1,"DeviceIndex":0,"Scalars":[{"Index":0,"Scalar":1.0,"ActuatorType":"Vibrate"}]}}})).await;
         assert!(result.unwrap_err().contains("cancelled by stop"));
         app.shutdown().await;
+    }
+}
+
+/// True for a device whose only outputs are position moves (LinearCmd):
+/// no vibration, rotation or other level output that a stop could switch off.
+pub(crate) fn is_stroke_only(device: &Value) -> bool {
+    let Some(messages) = device["DeviceMessages"].as_object() else {
+        return false;
+    };
+    let has = |name: &str| {
+        messages
+            .get(name)
+            .is_some_and(|v| v.as_array().map_or(true, |a| !a.is_empty()))
+    };
+    has("LinearCmd")
+        && !["ScalarCmd", "RotateCmd", "OscillateCmd", "VibrateCmd"]
+            .iter()
+            .any(|name| has(name))
+}
+
+#[cfg(test)]
+mod stroke_only_tests {
+    use super::is_stroke_only;
+    use serde_json::json;
+
+    #[test]
+    fn a_stroker_is_stroke_only() {
+        let handy = json!({"DeviceMessages": {"LinearCmd": [{"StepCount": 100, "ActuatorType": "Position"}], "StopDeviceCmd": {}}});
+        assert!(is_stroke_only(&handy));
+    }
+
+    #[test]
+    fn a_vibrator_or_mixed_device_is_not() {
+        let vibe = json!({"DeviceMessages": {"ScalarCmd": [{"StepCount": 20, "ActuatorType": "Vibrate"}], "StopDeviceCmd": {}}});
+        let mixed = json!({"DeviceMessages": {"LinearCmd": [{"StepCount": 100}], "ScalarCmd": [{"StepCount": 20}]}});
+        assert!(!is_stroke_only(&vibe));
+        assert!(!is_stroke_only(&mixed));
+        assert!(!is_stroke_only(&json!({})));
     }
 }

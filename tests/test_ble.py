@@ -756,3 +756,16 @@ async def test_cancel_during_pairing_releases_link_and_propagates(radio, monkeyp
     assert not radio.bridge.connected_addresses
     assert not radio.bridge._connecting
     assert radio.clients[0].operations == [("disconnect",)]
+
+
+async def test_prepare_hold_acknowledges_a_stroker_and_stop_writes_nothing(radio):
+    await radio.request("connect")
+    result = await radio.request("prepare_hold")
+    assert result == {"verified": True, "hold": True, "connection_id": "first"}
+    assert radio.clients[0].operations == []
+    assert (await radio.request("stop"))["verified"] is True
+    assert await radio.request("keepalive") == {}
+    assert radio.clients[0].operations == []
+    await radio.request("disconnect")
+    assert radio.clients[0].operations == [("disconnect",)]
+

@@ -1,3 +1,8 @@
+## 2.5.0 - The Handy and other strokers connect (engine 2.1.0)
+
+- **Strokers connect:** a device that only moves to positions (for example The Handy) has no motor to switch off, so the official stop produces no Bluetooth write. IntiHA's safety check waited for one, refused control ("official stop-plan generation did not settle") and dropped the link, again and again. Now such a device's safe stop is a **hold**: Stop sends no further moves and it halts at the end of its current move. Vibrators keep the verified motor-off stop as before.
+- Needs both parts: the IntiHA integration 2.5.0 (HACS) and the IntiHA Proxy Engine app 2.1.0.
+
 ## 2.4.0 - Switch off when idle
 
 - **Idle switch-off:** with nothing playing for 15 minutes (Configure > Behaviour > "Switch off after idle", 0 = never), IntiHA switches itself off: toys are stopped and disconnected so they can sleep. A connected toy is kept awake by IntiHA's keep-alive and battery reads, so one left connected drains its battery. Switch IntiHA on again to reconnect.

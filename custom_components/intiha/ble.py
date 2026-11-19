@@ -203,6 +203,7 @@ _OPS = frozenset(
         "unsubscribe",
         "set_stop_plan",
         "prepare_stop",
+        "prepare_hold",
     }
 )
 
@@ -225,6 +226,9 @@ class _Connection:
     client: Any
     subscriptions: set[str] = field(default_factory=set)
     stop_plan: tuple[_StopWrite, ...] = ()
+    # A stroke-only device (e.g. The Handy): its stop is to hold, sending no
+    # further moves; there is no motor-off write to replay.
+    stop_hold: bool = False
     pairing_requested: bool = False
     report_task: asyncio.Task[Any] | None = None
     battery_task: asyncio.Task[Any] | None = None
@@ -466,6 +470,13 @@ class BleBridge:
                 if not stopped:
                     raise BleBridgeError("Stop could not be sent before disconnecting the device")
                 return {}
+            if op in ("keepalive", "stop") and connection.stop_hold and not connection.stop_plan:
+                # A held stroker: nothing to write. Its own protocol keeps the
+                # link alive; a stop is simply no further moves.
+                if not connection.client.is_connected:
+                    self._connection_lost(address, connection_id, "link_lost")
+                    raise BleBridgeError("BLE connection is no longer connected")
+                return {"verified": True, "connection_id": connection.connection_id} if op == "stop" else {}
             if op == "keepalive":
                 # Re-send the verified stop to an idle device to keep its link
                 # alive. A failure only means the link is gone: close it and
@@ -522,6 +533,10 @@ class BleBridge:
                 raise BleBridgeError("BLE connection is no longer connected")
             if op == "prepare_stop":
                 return await self._prepare_stop(connection, request, epoch)
+            if op == "prepare_hold":
+                connection.stop_plan = ()
+                connection.stop_hold = True
+                return {"verified": True, "hold": True, "connection_id": connection.connection_id}
             if op == "set_stop_plan":
                 writes = request.get("writes")
                 if not isinstance(writes, list) or not 1 <= len(writes) <= MAX_STOP_WRITES:
