@@ -885,3 +885,38 @@ async def test_quick_writes_fall_back_when_the_stroker_does_not_answer(radio, mo
     radio.clients[0].callbacks[CHARACTERISTIC](None, bytearray([2, 1]))   # a late answer
     await radio.request("write", characteristic=CHARACTERISTIC, data=[3], response=True)
     assert radio.clients[0].operations[-1][3] is True                     # stays acknowledged
+
+
+async def test_handy_commands_go_on_the_live_link_and_bring_back_replies(radio, monkeypatch):
+    from custom_components.intiha import handy
+
+    monkeypatch.setattr(handy, "TX", CHARACTERISTIC)
+    await radio.request("connect")
+    await radio.request("subscribe", characteristic=CHARACTERISTIC)
+    client = radio.clients[0]
+    sent = []
+    real = client.write_gatt_char
+
+    async def write(characteristic, data, *, response):
+        sent.append((bytes(data), response))
+        client.callbacks[CHARACTERISTIC](None, bytearray([8, 3, 34, 3, 8, 1, 0]))   # the Handy replies
+        await real(characteristic, data, response=response)
+
+    client.write_gatt_char = write
+    _rid, packet = handy.hamp_start()
+    replies = await radio.bridge.async_handy(ADDRESS, [packet], wait=0.01)
+    assert sent == [(packet, True)]
+    assert replies and handy.describe(replies[0])["type"] == "response"
+
+
+def test_handy_commands_are_encoded_as_the_published_protocol():
+    from custom_components.intiha import handy
+
+    _rid, packet = handy.mode_set(handy.MODE_HDSP)
+    fields = handy._fields(packet)
+    assert fields[0] == (1, 0, 1)                         # a request
+    request = handy._fields(fields[1][2])
+    assert request[1][0] == 701 and handy._fields(request[1][2]) == [(1, 0, 2)]
+    _rid, zone = handy.hamp_zone(0.25, 0.75)
+    body = handy._fields(handy._fields(handy._fields(zone)[1][2])[1][2])
+    assert [round(v, 2) for _, _, v in body] == [0.25, 0.75]

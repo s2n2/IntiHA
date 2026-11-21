@@ -249,6 +249,36 @@
           "description": "How long to record (1-60 s)."
         }
       }
+    },
+    "handy": {
+      "name": "The Handy command",
+      "description": "Send The Handy its own commands over its live Bluetooth link: built-in stroking (HAMP: speed and range) and modes. Returns the Handy's replies.",
+      "fields": {
+        "address": {
+          "name": "Bluetooth address",
+          "description": "The Handy's Bluetooth address."
+        },
+        "action": {
+          "name": "Action",
+          "description": "status, hamp_start, hamp_velocity, hamp_zone, hamp_stop or hdsp."
+        },
+        "velocity": {
+          "name": "Velocity",
+          "description": "Built-in stroking speed."
+        },
+        "lo": {
+          "name": "Lower",
+          "description": "Lower end of the stroke range, %."
+        },
+        "hi": {
+          "name": "Upper",
+          "description": "Upper end of the stroke range, %."
+        },
+        "wait": {
+          "name": "Wait",
+          "description": "Seconds to collect the Handy's replies."
+        }
+      }
     }
   }
 }

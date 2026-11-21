@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 
+from . import handy
 from .retry_policy import classify_ble_failure
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -243,6 +244,8 @@ class _Connection:
     quick_since: float | None = None
     quick_answered: bool = False
     quick_failed: bool = False
+    # The Handy's own commands (handy.py): its replies, while one is waited for.
+    raw_tap: list[bytes] | None = None
     pairing_requested: bool = False
     report_task: asyncio.Task[Any] | None = None
     battery_task: asyncio.Task[Any] | None = None
@@ -1404,6 +1407,29 @@ class BleBridge:
             raise ValueError("Characteristic is absent from this connected device")
         return characteristic
 
+    async def async_handy(self, address: str, packets: list[bytes], wait: float = 0.6) -> list[bytes]:
+        """Send The Handy's own commands on its live link; return its replies.
+
+        Serialised with Buttplug's own writes (the per-device lock), each
+        acknowledged, so nothing is lost or reordered.
+        """
+        address = self._validate_address(address)
+        connection = self._connections.get(address)
+        if connection is None or not connection.client.is_connected:
+            raise BleBridgeError("The device is not connected")
+        replies: list[bytes] = []
+        async with self._locks.setdefault(address, asyncio.Lock()):
+            connection.raw_tap = replies
+            try:
+                for data in packets:
+                    async with asyncio.timeout(IO_TIMEOUT):
+                        await connection.client.write_gatt_char(handy.TX, data, response=True)
+                    connection.last_write = self._hass.loop.time()
+                await asyncio.sleep(wait)
+            finally:
+                connection.raw_tap = None
+        return replies
+
     @staticmethod
     def _quick_stroker_write(
         connection: _Connection, characteristic: Any, write: _StopWrite, now: float
@@ -1599,6 +1625,8 @@ class BleBridge:
             or characteristic not in connection.subscriptions
         ):
             return
+        if connection.raw_tap is not None:
+            connection.raw_tap.append(bytes(data))
         if connection.stop_hold:
             connection.quick_answered = True
         if connection.stop_hold and _LOGGER.isEnabledFor(logging.DEBUG):

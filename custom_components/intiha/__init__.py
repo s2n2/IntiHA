@@ -55,6 +55,47 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
         supports_response=SupportsResponse.ONLY,
     )
 
+    async def handy(call: ServiceCall) -> ServiceResponse:
+        """The Handy's own commands: built-in stroking (HAMP) and modes."""
+        from . import handy as h
+
+        action = call.data["action"]
+        lo, hi = call.data["lo"] / 100, call.data["hi"] / 100
+        velocity = call.data["velocity"]
+        packets = {
+            "status": [h.mode_get(), h.hamp_state(), h.stroke_get(), h.slider_state()],
+            "hamp_start": [h.mode_set(h.MODE_HAMP), h.hamp_zone(lo, hi), h.hamp_velocity(velocity), h.hamp_start()],
+            "hamp_velocity": [h.hamp_velocity(velocity)],
+            "hamp_zone": [h.hamp_zone(lo, hi)],
+            "hamp_stop": [h.hamp_stop(), h.mode_set(h.MODE_HDSP)],
+            "hdsp": [h.mode_set(h.MODE_HDSP)],
+        }[action]
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            coordinator = getattr(entry, "runtime_data", None)
+            if coordinator is None:
+                continue
+            try:
+                replies = await coordinator.ble.async_handy(call.data["address"], [p for _, p in packets], call.data["wait"])
+            except Exception as err:
+                raise HomeAssistantError(f"The Handy did not take the command: {err}") from err
+            return {"sent": [rid for rid, _ in packets], "replies": [h.describe(r) for r in replies]}
+        raise HomeAssistantError("IntiHA is not loaded")
+
+    hass.services.async_register(
+        DOMAIN,
+        "handy",
+        handy,
+        schema=vol.Schema({
+            vol.Required("address"): cv.string,
+            vol.Required("action"): vol.In(("status", "hamp_start", "hamp_velocity", "hamp_zone", "hamp_stop", "hdsp")),
+            vol.Optional("velocity", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+            vol.Optional("lo", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+            vol.Optional("hi", default=100.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+            vol.Optional("wait", default=0.6): vol.All(vol.Coerce(float), vol.Range(min=0, max=5)),
+        }),
+        supports_response=SupportsResponse.ONLY,
+    )
+
     for action in ("stop_all", "scan", "reconnect"):
         hass.services.async_register(
             DOMAIN,

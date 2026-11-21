@@ -1,3 +1,8 @@
+## 2.8.0 - The Handy's own commands
+
+- **`intiha.handy`:** sends The Handy its own commands over its live Bluetooth link, for what Buttplug cannot do: built-in stroking (HAMP: a speed between a stroke range, which the Handy runs on its own clock) and its modes. Ohdoki documents direct moves (all Buttplug sends) as for manual control without timing; built-in stroking is the mode for a remote operator. Returns the Handy's replies, decoded. Serialised with Buttplug's own writes.
+- Integration only: the engine stays at 2.2.0.
+
 ## 2.7.0 - Smoother strokers
 
 - **Quicker stroker moves:** a stroker's moves (The Handy) no longer wait for each Bluetooth write's response. Through a proxy that wait took 100-300 ms, sometimes nearly a second, so moves landed late and out of rhythm and the stroker jerked. A stroker's stop is a hold (no write), so no stop depends on these writes; vibrators keep acknowledged writes, and so does any characteristic that does not allow writing without a response. It checks itself: the stroker answers every command, and if no answer comes within 2 seconds the connection goes back to acknowledged writes.
