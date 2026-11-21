@@ -960,7 +960,7 @@ async def test_buttplug_moves_to_the_handy_are_sent_stopping(radio, monkeypatch)
     await radio.request("write", characteristic=CHARACTERISTIC, data=list(move), response=True)
     written = radio.clients[0].operations[-1][2]
     assert written != move
-    assert handy._fields(handy._fields(handy._fields(handy._fields(written)[1][2])[0][2]))[-1] == (3, 0, 1)
+    assert handy._fields(handy._fields(handy._fields(written)[1][2])[0][2])[-1] == (3, 0, 1)
     # Other writes are untouched.
     await radio.request("write", characteristic=CHARACTERISTIC, data=[1, 2, 3], response=True)
     assert radio.clients[0].operations[-1][2] == b"\x01\x02\x03"
