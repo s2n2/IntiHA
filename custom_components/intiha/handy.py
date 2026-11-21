@@ -170,7 +170,10 @@ def _tree(data: bytes, depth: int = 0) -> Any:
 
 def describe(data: bytes) -> dict[str, Any]:
     """A reply or notification, readable: type, id and decoded fields."""
-    fields = _fields(data)
+    try:
+        fields = _fields(data)
+    except Exception:  # noqa: BLE001
+        return {"type": "unreadable", "raw": data.hex(" ")}
     kind = next((v for f, w, v in fields if f == 1 and w == 0), None)
     body = next((v for f, w, v in fields if f in (4, 5) and w == 2), b"")
     names = {3: "response", 4: "notification"}
@@ -179,7 +182,10 @@ def describe(data: bytes) -> dict[str, Any]:
         out["fields"] = _tree(body)
     except Exception:  # noqa: BLE001
         pass
-    for f, w, v in _fields(body) if body else []:
-        if f == 1 and w == 0 and kind == 3:
-            out["id"] = v
+    try:
+        for f, w, v in _fields(body) if body else []:
+            if f == 1 and w == 0 and kind == 3:
+                out["id"] = v
+    except Exception:  # noqa: BLE001
+        pass
     return out

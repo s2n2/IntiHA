@@ -899,7 +899,7 @@ async def test_handy_commands_go_on_the_live_link_and_bring_back_replies(radio, 
 
     async def write(characteristic, data, *, response):
         sent.append((bytes(data), response))
-        client.callbacks[CHARACTERISTIC](None, bytearray([8, 3, 34, 3, 8, 1, 0]))   # the Handy replies
+        client.callbacks[CHARACTERISTIC](None, bytearray([8, 3, 34, 2, 8, 1]))   # the Handy replies
         await real(characteristic, data, response=response)
 
     client.write_gatt_char = write
