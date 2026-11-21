@@ -106,6 +106,7 @@ class Radio:
     registration: Mock = field(default_factory=Mock)
     gate: asyncio.Event | None = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
+    cache_used: list = field(default_factory=list)
 
     async def request(self, op, connection_id="first", **kwargs):
         return await self.bridge.async_request(
@@ -144,6 +145,7 @@ async def radio(hass, monkeypatch):
 
     async def establish(client_class, device, name, **kwargs):
         assert kwargs["max_attempts"] == 1
+        result.cache_used.append(kwargs.get("use_services_cache", True))
         assert kwargs["timeout"] >= 10
         client = client_class(device, **kwargs)
         result.clients.append(client)
@@ -769,3 +771,18 @@ async def test_prepare_hold_acknowledges_a_stroker_and_stop_writes_nothing(radio
     await radio.request("disconnect")
     assert radio.clients[0].operations == [("disconnect",)]
 
+
+
+async def test_link_dropped_before_use_rediscovers_services_next_time(radio):
+    """The Handy after a firmware update: HA's cached GATT table was the old
+    one, so the engine found none of its characteristics and dropped the link
+    straight away, on every retry. The next link must skip that cache."""
+    await radio.request("connect")
+    await radio.request("disconnect")
+    await radio.request("connect", "second")
+    assert radio.cache_used == [True, False]
+    # Once rediscovered, the cache is trusted again.
+    await radio.write([1], "second")
+    await radio.request("disconnect", "second")
+    await radio.request("connect", "third")
+    assert radio.cache_used == [True, False, True]

@@ -57,6 +57,9 @@ REPORT_QUIET_AFTER_WRITE = 0.3
 # change); re-read occasionally so a missed notification cannot stick.
 REPORT_NOTIFY_REFRESH = 30.0
 REPORT_BURST_SETTLE = 0.15
+# A link dropped this soon after connecting, before any write, is treated as
+# a service mismatch: the next connection skips the GATT service cache.
+FRESH_SERVICES_WITHIN = 30.0
 # Poll interval while a non-notifying device is being driven.
 REPORT_ACTIVE_INTERVAL = 2.0
 # Chorus (Sync 2) firmware ignores the level in the command that switches a
@@ -240,6 +243,9 @@ class _Connection:
     report_tap: Callable[[bytes], None] | None = None
     # Last Chorus motor command written (for the motor-start repeat).
     chorus_last: bytes = b""
+    # When the link came up (loop time): a link the engine drops at once,
+    # before any write, did not match the device's services.
+    opened: float = 0.0
 
 
 class BleBridge:
@@ -266,6 +272,9 @@ class BleBridge:
         self._requires_pairing = requires_pairing
         self._on_pairing_required = on_pairing_required
         self._pairing_required: set[str] = set()
+        # Devices whose cached GATT services are suspect: the next link runs
+        # a fresh service discovery (after a firmware update, for example).
+        self._fresh_services: set[str] = set()
         self._running = False
         self._resetting = False
         self._epoch = 0
@@ -466,6 +475,8 @@ class BleBridge:
                 raise BleBridgeError("BLE connection_id is stale or disconnected")
             if op == "disconnect":
                 self._connections.pop(address)
+                if self._unmatched(connection):
+                    await self._forget_services(connection)
                 stopped = await self._close_connection(connection, "requested")
                 if not stopped:
                     raise BleBridgeError("Stop could not be sent before disconnecting the device")
@@ -1234,6 +1245,7 @@ class BleBridge:
                     # for errors the helper classifies as transient.
                     max_attempts=1,
                     timeout=12.0,
+                    use_services_cache=address not in self._fresh_services,
                 )
             if (
                 not self._running
@@ -1243,8 +1255,10 @@ class BleBridge:
                 or not client.is_connected
             ):
                 raise BleBridgeError("Connection was revoked or lost while connecting")
+            self._fresh_services.discard(address)
             connection = _Connection(
-                address, connection_id, client, pairing_requested=pairing_required
+                address, connection_id, client, pairing_requested=pairing_required,
+                opened=self._hass.loop.time(),
             )
             resolved_name = await self._connected_device_name(connection, device)
             connection.name = resolved_name or getattr(device, "name", None) or ""
@@ -1442,6 +1456,36 @@ class BleBridge:
                 await connection.client.write_gatt_char(
                     write.characteristic, write.data, response=write.response
                 )
+
+    def _unmatched(self, connection: _Connection) -> bool:
+        """The engine dropped this link at once, before any write or subscribe.
+
+        That is what it does when the services Home Assistant reported do not
+        match the device's protocol: typically a cached GATT table from
+        before a firmware update (The Handy FW4 changed its services and its
+        name, and was refused with "None of the required GATT characteristics
+        was found" on every retry).
+        """
+        return (
+            connection.last_write == 0.0
+            and not connection.subscriptions
+            and not connection.stop_plan
+            and not connection.stop_hold
+            and self._hass.loop.time() - connection.opened < FRESH_SERVICES_WITHIN
+        )
+
+    async def _forget_services(self, connection: _Connection) -> None:
+        """Next link to this device discovers its services afresh."""
+        self._fresh_services.add(connection.address)
+        clear = getattr(connection.client, "clear_cache", None)
+        if clear is not None:
+            with suppress(Exception):
+                async with asyncio.timeout(DISCONNECT_TIMEOUT):
+                    await clear()
+        _LOGGER.info(
+            "%s was dropped before use; its next connection will rediscover its Bluetooth services",
+            connection.address,
+        )
 
     @staticmethod
     async def _disconnect_client(client: Any) -> None:

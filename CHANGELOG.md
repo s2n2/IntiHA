@@ -1,3 +1,8 @@
+## 2.6.1 - Devices reconnect after a firmware update
+
+- **Fresh services after a firmware update:** Home Assistant keeps each device's Bluetooth service list. After The Handy updated to firmware 4 it had new services (and a new name), but IntiHA kept being handed the old list, so the engine found "None of the required GATT characteristics" and dropped the link on every retry. A link the engine drops straight away, before it is used, now makes the next connection discover the device's services afresh.
+- Integration only: the engine stays at 2.2.0.
+
 ## 2.6.0 - Stroker position (engine 2.2.0)
 
 - **Commanded position:** a stroker such as The Handy gets a "Commanded position" sensor showing where the client (for example Ogg) last sent it, 0-100 %. It is the commanded move, not a reading: the Handy reports nothing back.
