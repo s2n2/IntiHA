@@ -1221,14 +1221,14 @@ mod tests {
         bridge.configure(&json!({"enabled":true})).unwrap();
         bridge
             .advertisement(json!({
-                "address":"50:F1:4A:61:2F:2B",
+                "address":"AA:BB:CC:00:00:02",
                 "name":"",
                 "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],
                 "manufacturer_data":{}
             }))
             .await;
         let candidates = bridge.candidates.lock().unwrap();
-        let candidate = candidates.get("50:F1:4A:61:2F:2B").unwrap();
+        let candidate = candidates.get("AA:BB:CC:00:00:02").unwrap();
         assert!(candidate.protocol_hints.is_empty());
         // 0xBB03 is shared by classic We-Vibe, We-Vibe 8-bit and Chorus. All
         // are candidates; HaConnector only proceeds once the GATT name agrees.
@@ -1241,14 +1241,14 @@ mod tests {
     #[tokio::test]
     async fn learned_name_survives_nameless_proxy_advertisements() {
         let bridge = discovery_bridge();
-        let address = "50:F1:4A:61:2F:2C";
+        let address = "AA:BB:CC:00:00:03";
         bridge
             .advertisement(json!({
                 "address":address.to_lowercase(),"name":"Bond",
                 "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],"manufacturer_data":{}
             }))
             .await;
-        for name in ["", address, "50-F1-4A-61-2F-2C"] {
+        for name in ["", address, "AA-BB-CC-00-00-03"] {
             bridge
                 .advertisement(json!({
                     "address":address,"name":name,

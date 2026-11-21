@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from intiha_core.probe import Path, ProbeError, ProxyProbe, select_path, validate_address
 
-ADDRESS = 'D0:2E:AB:3A:D5:B4'
+ADDRESS = 'AA:BB:CC:00:00:05'
 SOURCE = 'AA:BB:CC:DD:EE:01'
 
 

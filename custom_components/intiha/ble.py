@@ -1474,10 +1474,11 @@ class BleBridge:
             events.append((at, handy.hdsp_move(xp, int(ms))[1]))
             at += ms / 1000
         end, s = at + tail_ms / 1000, 0.0
-        asked: dict[int, float] = {}   # sample request id -> when it was sent
+        asked: dict[int, float] = {}   # sample request id -> when it was really sent
+        ids: dict[bytes, int] = {}
         while s < end:
             rid, packet = handy.slider_state()
-            asked[rid] = s + 0.001
+            ids[packet] = rid
             events.append((s + 0.001, packet))
             s += sample_ms / 1000
         events.sort(key=lambda e: e[0])
@@ -1494,6 +1495,8 @@ class BleBridge:
                 # The lock per write, so other writes interleave in order.
                 async with lock, asyncio.timeout(IO_TIMEOUT):
                     await connection.client.write_gatt_char(characteristic, data, response=False)
+                if data in ids:
+                    asked[ids[data]] = loop.time() - start
             if moves:
                 connection.last_write = loop.time()
             await asyncio.sleep(0.3)

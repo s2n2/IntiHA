@@ -1,6 +1,11 @@
 ## 2.8.0 - The Handy's own commands
 
-- **`intiha.handy`:** sends The Handy its own commands over its live Bluetooth link, for what Buttplug cannot do: built-in stroking (HAMP: a speed between a stroke range, which the Handy runs on its own clock) and its modes. Ohdoki documents direct moves (all Buttplug sends) as for manual control without timing; built-in stroking is the mode for a remote operator. Returns the Handy's replies, decoded. Serialised with Buttplug's own writes.
+- **`intiha.handy`:** sends The Handy its own commands over its live Bluetooth link, for what Buttplug cannot do, and returns its replies, decoded. Serialised with Buttplug's own writes.
+  - `status`: its mode, built-in stroking state, **stroke zone** and slider (position in mm, speed, motor temperature).
+  - `stroke_set`: its stroke zone. Every move (Buttplug's too) is a share of this zone, so a narrow zone makes every stroke short, however it is driven. A Handy here had a 28 mm zone of its 100 mm; check it first when strokes look short.
+  - `trace`: a measuring tool. Runs direct moves while reading where the slider really is ~25 times a second, or, with no moves, only watches while something else drives it.
+  - `hamp_start` / `hamp_velocity` / `hamp_zone` / `hamp_stop`: built-in stroking. Speed is 0 (slowest, ~40 mm/s) to 1 (fastest, ~390 mm/s); starting resets the speed, so it is set after the start.
+- Test data uses made-up Bluetooth addresses only.
 - Integration only: the engine stays at 2.2.0.
 
 ## 2.7.0 - Smoother strokers

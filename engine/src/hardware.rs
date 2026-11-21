@@ -643,7 +643,7 @@ mod tests {
     }
 
     fn wevibe_guess(bridge: &Arc<Bridge>, protocol: &str) -> HaConnector {
-        let candidates = bridge.candidates_for_test("50:F1:4A:61:2F:2B");
+        let candidates = bridge.candidates_for_test("AA:BB:CC:00:00:02");
         let (_, specifier) = candidates
             .into_iter()
             .find(|(name, _)| name == protocol)
@@ -651,7 +651,7 @@ mod tests {
         HaConnector::new(
             bridge.clone(),
             serde_json::from_value(json!({
-                "address":"50:F1:4A:61:2F:2B","name":"",
+                "address":"AA:BB:CC:00:00:02","name":"",
                 "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],
                 "manufacturer_data":{},"rssi":null,"source":null
             }))
@@ -673,7 +673,7 @@ mod tests {
             HaConnector::new(
                 bridge.clone(),
                 serde_json::from_value(json!({
-                    "address":"10:CE:A9:38:C5:1E","name":advertised,
+                    "address":"AA:BB:CC:00:00:04","name":advertised,
                     "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],
                     "manufacturer_data":{},"rssi":null,"source":null
                 }))
@@ -699,7 +699,7 @@ mod tests {
         ));
         bridge
             .advertisement(json!({
-                "address":"50:F1:4A:61:2F:2B","name":"",
+                "address":"AA:BB:CC:00:00:02","name":"",
                 "service_uuids":["0000bb03-0000-1000-8000-00805f9b34fb"],"manufacturer_data":{}
             }))
             .await;

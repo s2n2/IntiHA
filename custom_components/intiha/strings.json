@@ -242,7 +242,7 @@
       "fields": {
         "address": {
           "name": "Bluetooth address",
-          "description": "Device address, e.g. D0:2E:AB:3A:D5:B4."
+          "description": "Device address, e.g. AA:BB:CC:00:00:05."
         },
         "seconds": {
           "name": "Seconds",
