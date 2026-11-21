@@ -22,17 +22,14 @@ async def test_hot_added_device_creates_controls_without_reload(native_server, c
     server = await native_server()
     ctl = await controllers(server)
     await eventually(lambda: ctl.connected)
+    # Announce the device only once the first inventory has been applied (the
+    # controller starts scanning straight after it): a reply resolved before
+    # the event but applied after it would otherwise remove the new device.
+    await eventually(lambda: server.of_kind('StartScanning'))
     added = device(index=3, name='Second device')
-    # A real server also lists a device it has just announced, so the
-    # controller's first inventory reply cannot race the device away.
-    server.inventory.append(added)
+    server.inventory.append(added)  # a real server lists what it announced
     await server.emit('DeviceAdded', added)
-    try:
-        await eventually(lambda: ctl.ready_count == 1)
-    except TimeoutError:
-        states = {k: (d.state, d.ready, d.connected, d.last_error) for k, d in ctl.devices.items()}
-        raise AssertionError(f"not ready: {states} status={ctl.status} error={ctl.last_error} "
-                             f"sent={[k for k, _ in server.messages]}") from None
+    await eventually(lambda: ctl.ready_count == 1)
     assert next(iter(ctl.devices.values())).description.name == 'Second device'
 
 
