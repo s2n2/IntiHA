@@ -44,7 +44,7 @@ handy:
       required: true
       selector:
         select:
-          options: [status, hamp_start, hamp_velocity, hamp_zone, hamp_stop, hdsp]
+          options: [status, hamp_start, hamp_velocity, hamp_zone, hamp_stop, hdsp, hdsp_move, raw]
     velocity:
       selector:
         number:
@@ -67,3 +67,14 @@ handy:
           min: 0
           max: 5
           step: 0.1
+    ms:
+      selector:
+        number:
+          min: 20
+          max: 10000
+    hex:
+      selector:
+        text:
+    response:
+      selector:
+        boolean:

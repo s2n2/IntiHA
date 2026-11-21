@@ -1407,7 +1407,9 @@ class BleBridge:
             raise ValueError("Characteristic is absent from this connected device")
         return characteristic
 
-    async def async_handy(self, address: str, packets: list[bytes], wait: float = 0.6) -> list[bytes]:
+    async def async_handy(
+        self, address: str, packets: list[bytes], wait: float = 0.6, *, response: bool = True
+    ) -> list[bytes]:
         """Send The Handy's own commands on its live link; return its replies.
 
         Serialised with Buttplug's own writes (the per-device lock), each
@@ -1423,7 +1425,8 @@ class BleBridge:
             try:
                 for data in packets:
                     async with asyncio.timeout(IO_TIMEOUT):
-                        await connection.client.write_gatt_char(handy.TX, data, response=True)
+                        await connection.client.write_gatt_char(handy.TX, data, response=response)
+                    _LOGGER.debug("Handy command %s: %s (response=%s)", address, data.hex(" "), response)
                     connection.last_write = self._hass.loop.time()
                 await asyncio.sleep(wait)
             finally:

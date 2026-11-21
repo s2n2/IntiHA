@@ -103,6 +103,15 @@ def hamp_state() -> tuple[int, bytes]:
     return request(_HAMP_STATE)
 
 
+def hdsp_move(xp: float, t_ms: int) -> tuple[int, bytes]:
+    """The same direct move Buttplug sends (RequestHdspXpTSet, stop_on_target off)."""
+    return request(744, _float(1, xp) + _uint(2, t_ms))
+
+
+def raw(data: bytes) -> tuple[int, bytes]:
+    return 0, data
+
+
 def hdsp_stop() -> tuple[int, bytes]:
     return request(_HDSP_STOP)
 
