@@ -45,6 +45,7 @@ def state_subject():
         "_async_engine_message",
         "_register_device",
         "_update_devices",
+        "_clear_reported",
     }
     coordinator.body = [
         node

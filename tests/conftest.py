@@ -100,7 +100,8 @@ class Server:
 
 
 @pytest_asyncio.fixture
-async def native_server():
+async def native_server(socket_enabled):
+    """A local fake Buttplug server (real 127.0.0.1 sockets are allowed here)."""
     servers = []
     async def make(inventory=None):
         server = Server(inventory)
