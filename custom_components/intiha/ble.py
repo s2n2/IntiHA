@@ -572,10 +572,17 @@ class BleBridge:
                         return {"data": list(data)}
                     if op == "write":
                         assert write is not None
-                        connection.last_write = self._hass.loop.time()
+                        started = self._hass.loop.time()
+                        connection.last_write = started
                         await connection.client.write_gatt_char(
                             characteristic, write.data, response=write.response
                         )
+                        if _LOGGER.isEnabledFor(logging.DEBUG):
+                            _LOGGER.debug(
+                                "BLE write %s: %d bytes, response=%s, %.0f ms",
+                                address, len(write.data), write.response,
+                                (self._hass.loop.time() - started) * 1000,
+                            )
                         self._after_chorus_write(connection, uuid, bytes(write.data), write.response)
                     elif op == "subscribe" and uuid not in connection.subscriptions:
                         # Register first: a device may notify synchronously while
