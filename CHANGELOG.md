@@ -1,3 +1,10 @@
+## 2.7.0 - Smoother strokers
+
+- **Quicker stroker moves:** a stroker's moves (The Handy) no longer wait for each Bluetooth write's response. Through a proxy that wait took 100-300 ms, sometimes nearly a second, so moves landed late and out of rhythm and the stroker jerked. A stroker's stop is a hold (no write), so no stop depends on these writes; vibrators keep acknowledged writes, and so does any characteristic that does not allow writing without a response.
+- Debug logging (custom_components.intiha.ble) shows how long each Bluetooth write takes.
+- Tests: the whole suite is up to date with the code again and runs on every push.
+- Integration only: the engine stays at 2.2.0.
+
 ## 2.6.1 - Devices reconnect after a firmware update
 
 - **Fresh services after a firmware update:** Home Assistant keeps each device's Bluetooth service list. After The Handy updated to firmware 4 it had new services (and a new name), but IntiHA kept being handed the old list, so the engine found "None of the required GATT characteristics" and dropped the link on every retry. A link the engine drops straight away, before it is used, now makes the next connection discover the device's services afresh.
