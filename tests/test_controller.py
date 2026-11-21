@@ -27,7 +27,12 @@ async def test_hot_added_device_creates_controls_without_reload(native_server, c
     # controller's first inventory reply cannot race the device away.
     server.inventory.append(added)
     await server.emit('DeviceAdded', added)
-    await eventually(lambda: ctl.ready_count == 1)
+    try:
+        await eventually(lambda: ctl.ready_count == 1)
+    except TimeoutError:
+        states = {k: (d.state, d.ready, d.connected, d.last_error) for k, d in ctl.devices.items()}
+        raise AssertionError(f"not ready: {states} status={ctl.status} error={ctl.last_error} "
+                             f"sent={[k for k, _ in server.messages]}") from None
     assert next(iter(ctl.devices.values())).description.name == 'Second device'
 
 

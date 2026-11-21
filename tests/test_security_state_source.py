@@ -87,6 +87,21 @@ def state_subject():
     subject.enabled = True
     subject.engine_connected = False
     subject._feedback_pending = {}
+    # Entity/sensor plumbing and background work are outside these policy tests.
+    subject.client_connected = False
+    subject.scanning = False
+    subject.last_error = None
+    subject.version = None
+    subject._last_advertisement = {}
+    subject._request_tasks = set()
+    subject._apply_visibility = Mock()
+    subject._update_sensor = Mock()
+    subject._update_commanded_intensity = Mock()
+    subject._update_commanded_position = Mock()
+    subject._safe_error = lambda text: text
+    subject._async_send_cached = AsyncMock()
+    subject._async_sync_known_devices = AsyncMock()
+    subject._async_ble_request = AsyncMock()
     subject._shutdown = False
     subject.stop_uncertain = False
     subject._uncertain_addresses = set()
