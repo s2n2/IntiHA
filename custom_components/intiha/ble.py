@@ -1457,15 +1457,18 @@ class BleBridge:
         A measuring tool: moves ([xp 0-1, ms] one after another) and a
         slider-state request every sample_ms, all on a timeline, then the
         Handy's answers with the time each arrived (s after the start).
-        Returns (move start offset s, [(t arrived, t asked, data)]).
+        With no moves it only watches. Returns (move start offset s,
+        [(t arrived, t asked, data)]).
         """
         address = self._validate_address(address)
         connection = self._connections.get(address)
         if connection is None or not connection.client.is_connected:
             raise BleBridgeError("The device is not connected")
         characteristic = self._characteristic(connection, handy.TX)
-        lead = 0.15   # the mode is set first
-        events: list[tuple[float, bytes]] = [(0.0, handy.mode_set(handy.MODE_HDSP)[1])]
+        # With moves the mode is set first; without, it only watches (whatever
+        # else is driving the Handy carries on between samples).
+        lead = 0.15 if moves else 0.0
+        events: list[tuple[float, bytes]] = [(0.0, handy.mode_set(handy.MODE_HDSP)[1])] if moves else []
         at = lead
         for xp, ms in moves:
             events.append((at, handy.hdsp_move(xp, int(ms))[1]))
@@ -1480,20 +1483,22 @@ class BleBridge:
         events.sort(key=lambda e: e[0])
         loop = self._hass.loop
         replies: list[tuple[float, bytes]] = []
-        async with self._locks.setdefault(address, asyncio.Lock()):
-            connection.raw_tap = replies
-            start = loop.time()
-            try:
-                for offset, data in events:
-                    delay = start + offset - loop.time()
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-                    async with asyncio.timeout(IO_TIMEOUT):
-                        await connection.client.write_gatt_char(characteristic, data, response=False)
+        lock = self._locks.setdefault(address, asyncio.Lock())
+        connection.raw_tap = replies
+        start = loop.time()
+        try:
+            for offset, data in events:
+                delay = start + offset - loop.time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                # The lock per write, so other writes interleave in order.
+                async with lock, asyncio.timeout(IO_TIMEOUT):
+                    await connection.client.write_gatt_char(characteristic, data, response=False)
+            if moves:
                 connection.last_write = loop.time()
-                await asyncio.sleep(0.3)
-            finally:
-                connection.raw_tap = None
+            await asyncio.sleep(0.3)
+        finally:
+            connection.raw_tap = None
         # Answers come in bunches, so a sample is dated by when it was asked for.
         out = []
         for when, data in replies:

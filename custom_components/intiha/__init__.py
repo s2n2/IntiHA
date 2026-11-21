@@ -139,7 +139,7 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
             vol.Optional("wait", default=0.6): vol.All(vol.Coerce(float), vol.Range(min=0, max=5)),
             vol.Optional("moves", default=[]): [vol.ExactSequence([vol.All(vol.Coerce(float), vol.Range(min=0, max=100)), vol.All(vol.Coerce(int), vol.Range(min=20, max=10000))])],
             vol.Optional("sample_ms", default=50): vol.All(vol.Coerce(int), vol.Range(min=20, max=1000)),
-            vol.Optional("tail_ms", default=800): vol.All(vol.Coerce(int), vol.Range(min=0, max=5000)),
+            vol.Optional("tail_ms", default=800): vol.All(vol.Coerce(int), vol.Range(min=0, max=30000)),
         }),
         supports_response=SupportsResponse.ONLY,
     )
