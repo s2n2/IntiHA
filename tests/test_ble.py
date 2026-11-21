@@ -841,3 +841,20 @@ async def test_status_reads_recover_from_timeouts_and_stop_with_the_link(radio, 
     task = connection.report_task
     await radio.request("disconnect")
     await _until(task.done)
+
+
+async def test_a_held_strokers_moves_skip_the_write_response(radio):
+    """The Handy's moves: no 100-300 ms wait for each write's response."""
+    await radio.request("connect")
+    await radio.request("prepare_hold")
+    await radio.request("write", characteristic=CHARACTERISTIC, data=[1, 2], response=True)
+    assert radio.clients[0].operations[-1] == ("write", CHARACTERISTIC, b"\x01\x02", False)
+
+
+async def test_vibrators_and_unconfirmed_devices_keep_acknowledged_writes(radio):
+    await radio.request("connect")
+    await radio.request("write", characteristic=CHARACTERISTIC, data=[1], response=True)
+    assert radio.clients[0].operations[-1] == ("write", CHARACTERISTIC, b"\x01", True)
+    await radio.stop_plan()             # a vibrator: a verified stop plan, not a hold
+    await radio.request("write", characteristic=CHARACTERISTIC, data=[2], response=True)
+    assert radio.clients[0].operations[-1] == ("write", CHARACTERISTIC, b"\x02", True)

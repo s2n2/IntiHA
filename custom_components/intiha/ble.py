@@ -232,6 +232,9 @@ class _Connection:
     # A stroke-only device (e.g. The Handy): its stop is to hold, sending no
     # further moves; there is no motor-off write to replay.
     stop_hold: bool = False
+    # A held stroker's moves go without a write response when the
+    # characteristic allows it (logged once per connection).
+    quick_writes_logged: bool = False
     pairing_requested: bool = False
     report_task: asyncio.Task[Any] | None = None
     battery_task: asyncio.Task[Any] | None = None
@@ -572,6 +575,7 @@ class BleBridge:
                         return {"data": list(data)}
                     if op == "write":
                         assert write is not None
+                        write = self._quick_stroker_write(connection, characteristic, write)
                         started = self._hass.loop.time()
                         connection.last_write = started
                         await connection.client.write_gatt_char(
@@ -1391,6 +1395,35 @@ class BleBridge:
         if characteristic is None:
             raise ValueError("Characteristic is absent from this connected device")
         return characteristic
+
+    @staticmethod
+    def _quick_stroker_write(connection: _Connection, characteristic: Any, write: _StopWrite) -> _StopWrite:
+        """A held stroker's moves without waiting for a write response.
+
+        A stroker (The Handy) streams position moves; waiting for each write's
+        response through a Bluetooth proxy takes 100-300 ms (sometimes nearly
+        a second), so moves land late and out of rhythm. Its safe stop is a
+        hold (no write at all), so no stop depends on these writes. Vibrators
+        and anything before the hold is confirmed keep acknowledged writes.
+        """
+        properties = getattr(characteristic, "properties", [])
+        quick = (
+            write.response
+            and connection.stop_hold
+            and not connection.stop_plan
+            and "write-without-response" in properties
+            and len(write.data) <= getattr(characteristic, "max_write_without_response_size", 20)
+        )
+        if connection.stop_hold and not connection.quick_writes_logged:
+            connection.quick_writes_logged = True
+            _LOGGER.info(
+                "%s stroker moves %s (characteristic %s: %s)",
+                connection.address,
+                "go without waiting for a write response" if quick else "wait for each write response",
+                write.characteristic[:8],
+                "/".join(properties),
+            )
+        return _StopWrite(write.characteristic, write.data, False) if quick else write
 
     @classmethod
     def _validate_write(cls, connection: _Connection, value: Any) -> _StopWrite:
