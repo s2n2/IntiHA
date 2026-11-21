@@ -57,6 +57,9 @@ REPORT_QUIET_AFTER_WRITE = 0.3
 # change); re-read occasionally so a missed notification cannot stick.
 REPORT_NOTIFY_REFRESH = 30.0
 REPORT_BURST_SETTLE = 0.15
+# A held stroker's quick (unacknowledged) writes fall back to acknowledged
+# ones if the stroker has not answered any command within this long.
+QUICK_ANSWER_WINDOW = 2.0
 # A link dropped this soon after connecting, before any write, is treated as
 # a service mismatch: the next connection skips the GATT service cache.
 FRESH_SERVICES_WITHIN = 30.0
@@ -235,6 +238,11 @@ class _Connection:
     # A held stroker's moves go without a write response when the
     # characteristic allows it (logged once per connection).
     quick_writes_logged: bool = False
+    # Quick writes must be answered: the stroker replies to every command.
+    # No reply within QUICK_ANSWER_WINDOW means back to acknowledged writes.
+    quick_since: float | None = None
+    quick_answered: bool = False
+    quick_failed: bool = False
     pairing_requested: bool = False
     report_task: asyncio.Task[Any] | None = None
     battery_task: asyncio.Task[Any] | None = None
@@ -575,7 +583,7 @@ class BleBridge:
                         return {"data": list(data)}
                     if op == "write":
                         assert write is not None
-                        write = self._quick_stroker_write(connection, characteristic, write)
+                        write = self._quick_stroker_write(connection, characteristic, write, self._hass.loop.time())
                         started = self._hass.loop.time()
                         connection.last_write = started
                         await connection.client.write_gatt_char(
@@ -1397,7 +1405,9 @@ class BleBridge:
         return characteristic
 
     @staticmethod
-    def _quick_stroker_write(connection: _Connection, characteristic: Any, write: _StopWrite) -> _StopWrite:
+    def _quick_stroker_write(
+        connection: _Connection, characteristic: Any, write: _StopWrite, now: float
+    ) -> _StopWrite:
         """A held stroker's moves without waiting for a write response.
 
         A stroker (The Handy) streams position moves; waiting for each write's
@@ -1405,6 +1415,10 @@ class BleBridge:
         a second), so moves land late and out of rhythm. Its safe stop is a
         hold (no write at all), so no stop depends on these writes. Vibrators
         and anything before the hold is confirmed keep acknowledged writes.
+
+        Self-checking: the stroker answers every command with a notification.
+        If none arrives within QUICK_ANSWER_WINDOW of the first quick write,
+        this connection goes back to acknowledged writes.
         """
         properties = getattr(characteristic, "properties", [])
         quick = (
@@ -1413,7 +1427,19 @@ class BleBridge:
             and not connection.stop_plan
             and "write-without-response" in properties
             and len(write.data) <= getattr(characteristic, "max_write_without_response_size", 20)
+            and not connection.quick_failed
         )
+        if quick and not connection.quick_answered:
+            if connection.quick_since is None:
+                connection.quick_since = now
+            elif now - connection.quick_since > QUICK_ANSWER_WINDOW:
+                connection.quick_failed = True
+                quick = False
+                _LOGGER.warning(
+                    "%s did not answer moves sent without a write response; "
+                    "using acknowledged writes on this connection",
+                    connection.address,
+                )
         if connection.stop_hold and not connection.quick_writes_logged:
             connection.quick_writes_logged = True
             _LOGGER.info(
@@ -1573,6 +1599,8 @@ class BleBridge:
             or characteristic not in connection.subscriptions
         ):
             return
+        if connection.stop_hold:
+            connection.quick_answered = True
         if connection.stop_hold and _LOGGER.isEnabledFor(logging.DEBUG):
             # A stroker answers each move: shows its moves are taken.
             _LOGGER.debug("BLE notify %s: %s", connection.address, data[:40].hex(" "))

@@ -1,6 +1,6 @@
 ## 2.7.0 - Smoother strokers
 
-- **Quicker stroker moves:** a stroker's moves (The Handy) no longer wait for each Bluetooth write's response. Through a proxy that wait took 100-300 ms, sometimes nearly a second, so moves landed late and out of rhythm and the stroker jerked. A stroker's stop is a hold (no write), so no stop depends on these writes; vibrators keep acknowledged writes, and so does any characteristic that does not allow writing without a response.
+- **Quicker stroker moves:** a stroker's moves (The Handy) no longer wait for each Bluetooth write's response. Through a proxy that wait took 100-300 ms, sometimes nearly a second, so moves landed late and out of rhythm and the stroker jerked. A stroker's stop is a hold (no write), so no stop depends on these writes; vibrators keep acknowledged writes, and so does any characteristic that does not allow writing without a response. It checks itself: the stroker answers every command, and if no answer comes within 2 seconds the connection goes back to acknowledged writes.
 - Debug logging (custom_components.intiha.ble) shows how long each Bluetooth write takes.
 - Tests: the whole suite is up to date with the code again and runs on every push.
 - Integration only: the engine stays at 2.2.0.

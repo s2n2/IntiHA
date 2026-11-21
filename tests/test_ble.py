@@ -858,3 +858,30 @@ async def test_vibrators_and_unconfirmed_devices_keep_acknowledged_writes(radio)
     await radio.stop_plan()             # a vibrator: a verified stop plan, not a hold
     await radio.request("write", characteristic=CHARACTERISTIC, data=[2], response=True)
     assert radio.clients[0].operations[-1] == ("write", CHARACTERISTIC, b"\x02", True)
+
+
+async def test_quick_writes_stay_quick_while_the_stroker_answers(radio, monkeypatch):
+    monkeypatch.setattr(ble, "QUICK_ANSWER_WINDOW", 0.05)
+    await radio.request("connect")
+    await radio.request("subscribe", characteristic=CHARACTERISTIC)
+    await radio.request("prepare_hold")
+    await radio.request("write", characteristic=CHARACTERISTIC, data=[1], response=True)
+    radio.clients[0].callbacks[CHARACTERISTIC](None, bytearray([2, 1]))   # the stroker answers
+    await asyncio.sleep(0.1)
+    await radio.request("write", characteristic=CHARACTERISTIC, data=[2], response=True)
+    assert radio.clients[0].operations[-1] == ("write", CHARACTERISTIC, b"\x02", False)
+
+
+async def test_quick_writes_fall_back_when_the_stroker_does_not_answer(radio, monkeypatch):
+    monkeypatch.setattr(ble, "QUICK_ANSWER_WINDOW", 0.05)
+    await radio.request("connect")
+    await radio.request("subscribe", characteristic=CHARACTERISTIC)
+    await radio.request("prepare_hold")
+    await radio.request("write", characteristic=CHARACTERISTIC, data=[1], response=True)
+    assert radio.clients[0].operations[-1][3] is False
+    await asyncio.sleep(0.1)                                              # no answer
+    await radio.request("write", characteristic=CHARACTERISTIC, data=[2], response=True)
+    assert radio.clients[0].operations[-1] == ("write", CHARACTERISTIC, b"\x02", True)
+    radio.clients[0].callbacks[CHARACTERISTIC](None, bytearray([2, 1]))   # a late answer
+    await radio.request("write", characteristic=CHARACTERISTIC, data=[3], response=True)
+    assert radio.clients[0].operations[-1][3] is True                     # stays acknowledged
