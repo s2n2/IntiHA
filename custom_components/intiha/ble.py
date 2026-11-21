@@ -1573,6 +1573,9 @@ class BleBridge:
             or characteristic not in connection.subscriptions
         ):
             return
+        if connection.stop_hold and _LOGGER.isEnabledFor(logging.DEBUG):
+            # A stroker answers each move: shows its moves are taken.
+            _LOGGER.debug("BLE notify %s: %s", connection.address, data[:40].hex(" "))
         event = {
             "type": "notification",
             "address": connection.address,
