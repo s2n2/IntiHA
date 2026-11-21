@@ -22,7 +22,11 @@ async def test_hot_added_device_creates_controls_without_reload(native_server, c
     server = await native_server()
     ctl = await controllers(server)
     await eventually(lambda: ctl.connected)
-    await server.emit('DeviceAdded', device(index=3, name='Second device'))
+    added = device(index=3, name='Second device')
+    # A real server also lists a device it has just announced, so the
+    # controller's first inventory reply cannot race the device away.
+    server.inventory.append(added)
+    await server.emit('DeviceAdded', added)
     await eventually(lambda: ctl.ready_count == 1)
     assert next(iter(ctl.devices.values())).description.name == 'Second device'
 
@@ -214,7 +218,7 @@ async def test_stop_all_fences_waiting_output(native_server, controllers):
     assert not server.of_kind('ScalarCmd')
 
 
-async def test_server_offline_does_not_end_master_lifecycle(session):
+async def test_server_offline_does_not_end_master_lifecycle(session, socket_enabled):
     from intiha_core.controller import Controller
     ctl = Controller(session, 'ws://127.0.0.1:1', 'x', request_timeout=.05,
                      retry_initial=.01, retry_max=.02)
