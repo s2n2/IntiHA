@@ -1457,7 +1457,7 @@ class BleBridge:
         A measuring tool: moves ([xp 0-1, ms] one after another) and a
         slider-state request every sample_ms, all on a timeline, then the
         Handy's answers with the time each arrived (s after the start).
-        Returns (move start offset s, [(t, sent t, data)]).
+        Returns (move start offset s, [(t arrived, t asked, data)]).
         """
         address = self._validate_address(address)
         connection = self._connections.get(address)
@@ -1471,8 +1471,11 @@ class BleBridge:
             events.append((at, handy.hdsp_move(xp, int(ms))[1]))
             at += ms / 1000
         end, s = at + tail_ms / 1000, 0.0
+        asked: dict[int, float] = {}   # sample request id -> when it was sent
         while s < end:
-            events.append((s + 0.001, handy.slider_state()[1]))
+            rid, packet = handy.slider_state()
+            asked[rid] = s + 0.001
+            events.append((s + 0.001, packet))
             s += sample_ms / 1000
         events.sort(key=lambda e: e[0])
         loop = self._hass.loop
@@ -1491,7 +1494,12 @@ class BleBridge:
                 await asyncio.sleep(0.3)
             finally:
                 connection.raw_tap = None
-        return lead, [(when - start, 0.0, data) for when, data in replies]
+        # Answers come in bunches, so a sample is dated by when it was asked for.
+        out = []
+        for when, data in replies:
+            rid = handy.describe(data).get("id")
+            out.append((when - start, asked.get(rid, when - start), data))
+        return lead, out
 
     @staticmethod
     def _quick_stroker_write(

@@ -105,12 +105,15 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
             except Exception as err:
                 raise HomeAssistantError(f"The Handy did not take the trace: {err}") from err
             samples, notes = [], []
-            for when, _sent, data in replies:
+            for when, asked, data in replies:
                 d = h.describe(data)
                 state = next((f[1] for f in d.get("fields") or [] if f[0] == 842 and isinstance(f[1], list)), None)
                 if state is not None:
                     values = dict((k, v) for k, v in state)
-                    samples.append([round((when - lead) * 1000), round(values.get(2, 0.0), 1), round(values.get(4, 0.0))])
+                    samples.append([
+                        round((asked - lead) * 1000), round(values.get(2, 0.0), 1),
+                        round(values.get(4, 0.0)), round((when - asked) * 1000),
+                    ])
                 elif d.get("type") == "notification":
                     notes.append([round((when - lead) * 1000), d.get("fields")])
             plan, at = [], 0
