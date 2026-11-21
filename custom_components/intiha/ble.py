@@ -589,6 +589,12 @@ class BleBridge:
                         return {"data": list(data)}
                     if op == "write":
                         assert write is not None
+                        if uuid == handy.TX:
+                            # Buttplug's Handy moves carry on past their
+                            # target until the next move; make them stop there.
+                            stopping = handy.stop_on_target(write.data)
+                            if stopping is not None:
+                                write = _StopWrite(write.characteristic, stopping, write.response)
                         write = self._quick_stroker_write(connection, characteristic, write, self._hass.loop.time())
                         started = self._hass.loop.time()
                         connection.last_write = started
@@ -1450,7 +1456,8 @@ class BleBridge:
         return [data for _, data in replies]
 
     async def async_handy_trace(
-        self, address: str, moves: list[tuple[float, int]], sample_ms: int = 50, tail_ms: int = 800
+        self, address: str, moves: list[tuple[float, int]], sample_ms: int = 50, tail_ms: int = 800,
+        stop: bool = True,
     ) -> tuple[float, list[tuple[float, float, bytes]]]:
         """Run direct moves on The Handy while sampling where its slider is.
 
@@ -1471,7 +1478,7 @@ class BleBridge:
         events: list[tuple[float, bytes]] = [(0.0, handy.mode_set(handy.MODE_HDSP)[1])] if moves else []
         at = lead
         for xp, ms in moves:
-            events.append((at, handy.hdsp_move(xp, int(ms))[1]))
+            events.append((at, handy.hdsp_move(xp, int(ms), stop)[1]))
             at += ms / 1000
         end, s = at + tail_ms / 1000, 0.0
         asked: dict[int, float] = {}   # sample request id -> when it was really sent

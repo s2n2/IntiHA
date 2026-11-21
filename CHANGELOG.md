@@ -1,3 +1,9 @@
+## 2.8.1 - The Handy stops where it is sent
+
+- **The Handy stops where it is sent.** Buttplug sends every Handy move with "stop on target" off, so the Handy carries on past each position at the same speed until the next move arrives. Measured: a move to the middle ran on to the end of the stroke. Whenever the next move was late (a slow or resting finger, a pause in a script, the last move), it ran off towards an end, and slow control wandered by several mm. The Bluetooth bridge now turns stop on target on for every Handy move (and numbers it small, so it still goes in one write without waiting for a response).
+- `intiha.handy` `trace` and `hdsp_move`: new `stop` option (default on; off sends a move as Buttplug does).
+- Integration only: the engine stays at 2.2.0.
+
 ## 2.8.0 - The Handy's own commands
 
 - **`intiha.handy`:** sends The Handy its own commands over its live Bluetooth link, for what Buttplug cannot do, and returns its replies, decoded. Serialised with Buttplug's own writes.

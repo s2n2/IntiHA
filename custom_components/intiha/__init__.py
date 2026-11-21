@@ -65,7 +65,7 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
         lo, hi = call.data["lo"] / 100, call.data["hi"] / 100
         velocity = call.data["velocity"]
         packets = {
-            "hdsp_move": [h.hdsp_move(call.data["hi"] / 100, int(call.data["ms"]))],
+            "hdsp_move": [h.hdsp_move(call.data["hi"] / 100, int(call.data["ms"]), call.data["stop"])],
             "raw": [h.raw(bytes.fromhex(call.data.get("hex", "").replace(" ", "")))],
             "status": [h.mode_get(), h.hamp_state(), h.stroke_get(), h.slider_state()],
             # Starting resets the speed to 0, so the speed comes after the start.
@@ -100,7 +100,7 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
                 continue
             try:
                 lead, replies = await coordinator.ble.async_handy_trace(
-                    call.data["address"], moves, call.data["sample_ms"], call.data["tail_ms"]
+                    call.data["address"], moves, call.data["sample_ms"], call.data["tail_ms"], call.data["stop"]
                 )
             except Exception as err:
                 raise HomeAssistantError(f"The Handy did not take the trace: {err}") from err
@@ -140,6 +140,7 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
             vol.Optional("moves", default=[]): [vol.ExactSequence([vol.All(vol.Coerce(float), vol.Range(min=0, max=100)), vol.All(vol.Coerce(int), vol.Range(min=20, max=10000))])],
             vol.Optional("sample_ms", default=50): vol.All(vol.Coerce(int), vol.Range(min=20, max=1000)),
             vol.Optional("tail_ms", default=800): vol.All(vol.Coerce(int), vol.Range(min=0, max=30000)),
+            vol.Optional("stop", default=True): cv.boolean,
         }),
         supports_response=SupportsResponse.ONLY,
     )

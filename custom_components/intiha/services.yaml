@@ -91,3 +91,7 @@ handy:
         number:
           min: 0
           max: 30000
+    stop:
+      default: true
+      selector:
+        boolean:

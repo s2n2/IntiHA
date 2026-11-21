@@ -104,9 +104,46 @@ def hamp_state() -> tuple[int, bytes]:
     return request(_HAMP_STATE)
 
 
-def hdsp_move(xp: float, t_ms: int) -> tuple[int, bytes]:
-    """The same direct move Buttplug sends (RequestHdspXpTSet, stop_on_target off)."""
-    return request(744, _float(1, xp) + _uint(2, t_ms))
+def hdsp_move(xp: float, t_ms: int, stop: bool = True) -> tuple[int, bytes]:
+    """A direct move (RequestHdspXpTSet): go to xp (0-1 of the stroke zone) in t ms.
+
+    stop=False is what Buttplug sends: the Handy then carries on past xp at
+    the same speed until the next move (measured: a move to the middle ran on
+    to the end of the stroke).
+    """
+    return request(_HDSP_XPT, _float(1, xp) + _uint(2, t_ms) + (_uint(3, 1) if stop else b""))
+
+
+_HDSP_XPT = 744
+_small_ids = itertools.cycle(range(1, 128))
+
+
+def stop_on_target(data: bytes) -> bytes | None:
+    """Buttplug's direct move with stop_on_target set; None for anything else.
+
+    Buttplug sends every move with stop_on_target off, so whenever the next
+    move is late (a finger slowing or resting, a paused script, the last
+    move) the Handy runs on past its target towards the end of the stroke.
+    The request id is renumbered small (Buttplug never reads the answers)
+    so the move still fits one write without a response.
+    """
+    try:
+        top = _fields(data)
+        if [(f, w) for f, w, _ in top] != [(1, 0), (2, 2)] or top[0][2] != 1:
+            return None
+        req = _fields(top[1][2])
+        moves = [v for f, w, v in req if f == _HDSP_XPT and w == 2]
+        if len(moves) != 1 or any(f not in (_HDSP_XPT, 2) for f, _, _ in req):
+            return None
+        move = _fields(moves[0])
+        if any(f not in (1, 2, 3) for f, _, _ in move):
+            return None
+        xp = next((v for f, w, v in move if f == 1 and w == 5), 0.0)
+        t = next((v for f, w, v in move if f == 2 and w == 0), 0)
+    except (ValueError, IndexError, struct.error):
+        return None
+    body = _float(1, xp) + (_uint(2, t) if t else b"") + _uint(3, 1)
+    return _uint(1, 1) + _msg(2, _msg(_HDSP_XPT, body) + _uint(2, next(_small_ids)))
 
 
 def raw(data: bytes) -> tuple[int, bytes]:

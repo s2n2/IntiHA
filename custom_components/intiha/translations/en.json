@@ -301,6 +301,10 @@
         "tail_ms": {
           "name": "Tail",
           "description": "For trace: how long to keep sampling after the last move, ms."
+        },
+        "stop": {
+          "name": "Stop on target",
+          "description": "For trace and hdsp_move: the Handy stops at each move's position (off: it carries on at the same speed until the next move, as Buttplug sends it)."
         }
       }
     }

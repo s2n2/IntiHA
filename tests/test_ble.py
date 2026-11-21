@@ -921,3 +921,46 @@ def test_handy_commands_are_encoded_as_the_published_protocol():
     _rid, zone = handy.hamp_zone(0.25, 0.75)
     body = handy._fields({f: v for f, _, v in handy._fields(handy._fields(zone)[1][2])}[725])
     assert [round(v, 2) for _, _, v in body] == [0.25, 0.75]
+
+
+def _buttplug_move(rid: int, xp: float, t: int) -> bytes:
+    """A move as Buttplug's prost encoder writes it: id first, stop_on_target left out."""
+    from custom_components.intiha import handy
+
+    body = handy._float(1, xp) + handy._uint(2, t)
+    return handy._uint(1, 1) + handy._msg(2, handy._uint(2, rid) + handy._msg(744, body))
+
+
+def test_buttplug_handy_moves_are_made_to_stop_on_their_target():
+    from custom_components.intiha import handy
+
+    for rid in (0, 5, 20000, 3_000_000):
+        out = handy.stop_on_target(_buttplug_move(rid, 0.42, 1000))
+        assert out is not None
+        top = handy._fields(out)
+        assert top[0] == (1, 0, 1)
+        request = {f: v for f, _, v in handy._fields(top[1][2])}
+        assert 1 <= request[2] < 128                      # a small id: one write without a response
+        move = {f: v for f, _, v in handy._fields(request[744])}
+        assert round(move[1], 2) == 0.42 and move[2] == 1000 and move[3] == 1
+        assert len(out) <= 20
+    # Anything else goes as it is.
+    assert handy.stop_on_target(handy.mode_set(handy.MODE_HDSP)[1]) is None
+    assert handy.stop_on_target(handy.slider_state()[1]) is None
+    assert handy.stop_on_target(b"\x01\x02\x03") is None
+    assert handy.stop_on_target(b"") is None
+
+
+async def test_buttplug_moves_to_the_handy_are_sent_stopping(radio, monkeypatch):
+    from custom_components.intiha import handy
+
+    monkeypatch.setattr(handy, "TX", CHARACTERISTIC)
+    await radio.request("connect")
+    move = _buttplug_move(20000, 0.5, 150)
+    await radio.request("write", characteristic=CHARACTERISTIC, data=list(move), response=True)
+    written = radio.clients[0].operations[-1][2]
+    assert written != move
+    assert handy._fields(handy._fields(handy._fields(handy._fields(written)[1][2])[0][2]))[-1] == (3, 0, 1)
+    # Other writes are untouched.
+    await radio.request("write", characteristic=CHARACTERISTIC, data=[1, 2, 3], response=True)
+    assert radio.clients[0].operations[-1][2] == b"\x01\x02\x03"
