@@ -144,7 +144,13 @@ async def test_devices_and_controls_appear_once_without_reload(hass, loaded):
     assert device.name == "Official device name"
     assert device.name_by_user == "My device"
     entries = er.async_entries_for_device(er.async_get(hass), device.id)
-    assert len(entries) == 9
+    # Each control exists once, however often the device was discovered or
+    # became ready (the exact set grows as features are added).
+    assert len(entries) >= 9
+    assert len({entry.unique_id for entry in entries}) == len(entries)
+    await ready(coordinator, name="Official device name")
+    await hass.async_block_till_done()
+    assert len(er.async_entries_for_device(er.async_get(hass), device.id)) == len(entries)
     await discover(coordinator, address="AA:BB:CC:DD:EE:02", name="Another device")
     await hass.async_block_till_done()
     assert (

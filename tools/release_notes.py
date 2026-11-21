@@ -8,11 +8,11 @@ import re
 ROOT=Path(__file__).resolve().parents[1]
 
 def notes(tag):
-    version=json.loads((ROOT/'custom_components/intiha/manifest.json').read_text())['version']
+    version=json.loads((ROOT/'custom_components/intiha/manifest.json').read_text(encoding='utf-8'))['version']
     if tag != f'v{version}':
         raise ValueError(f'Tag {tag!r} does not match manifest v{version}')
-    text=(ROOT/'CHANGELOG.md').read_text()
-    section=re.search(rf'^## {re.escape(version)}\n(.*?)(?=^## |\Z)', text, re.M|re.S)
+    text=(ROOT/'CHANGELOG.md').read_text(encoding='utf-8')
+    section=re.search(rf'^## {re.escape(version)}(?: [^\n]*)?\n(.*?)(?=^## |\Z)', text, re.M|re.S)
     if not section:
         raise ValueError('Current version has no release notes')
     return f'# IntiHA {version}\n\n'+section.group(1).strip()+'\n'

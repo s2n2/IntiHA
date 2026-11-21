@@ -34,11 +34,13 @@ def test_invalid_app_log_level_rejected(level):
         run.engine_command(level)
 
 
-def test_release_notes_include_scope():
+def test_release_notes_follow_the_manifest_version():
+    import json
     tool=load('release_notes','tools/release_notes.py')
-    text=tool.notes('v0.3.0b1')
-    assert 'does not yet implement proxy motor control' in text
-    assert '0.2.7' not in text
+    version=json.loads((ROOT/'custom_components/intiha/manifest.json').read_text(encoding='utf-8'))['version']
+    text=tool.notes(f'v{version}')
+    assert text.startswith(f'# IntiHA {version}\n')
+    assert '\n## ' not in text  # only this version's section
     with pytest.raises(ValueError):
         tool.notes('v0.2.7')
 

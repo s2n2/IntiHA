@@ -84,6 +84,7 @@ def state_subject():
     subject.devices = {}
     subject.discovered = {}
     subject.enabled = True
+    subject.engine_connected = False
     subject._shutdown = False
     subject.stop_uncertain = False
     subject._uncertain_addresses = set()

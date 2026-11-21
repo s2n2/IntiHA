@@ -49,42 +49,7 @@ def device_description(
     }
 
 
-@pytest.fixture
-async def coordinator(hass):
-    """Use the real coordinator with controllable network/hardware boundaries."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="IntiHA",
-        data={
-            CONF_ENGINE_URL: "ws://engine.example:12346/bridge",
-            CONF_AUTO_RECONNECT: True,
-            CONF_CONTROL_TIMEOUT: 60,
-            CONF_SCAN_DURATION: 30,
-        },
-    )
-    entry.add_to_hass(hass)
-    value = IntiHACoordinator(hass, entry)
-    value.bridge = SimpleNamespace(
-        connected=False,
-        epoch=5,
-        request=AsyncMock(return_value={}),
-        send=AsyncMock(),
-        reconnect=AsyncMock(),
-        close=AsyncMock(),
-    )
-    value.ble = SimpleNamespace(
-        async_start=AsyncMock(),
-        async_stop=AsyncMock(),
-        async_disconnect_all=AsyncMock(),
-        async_request=AsyncMock(return_value={}),
-        discovered=Mock(return_value=[]),
-    )
-    value._store = SimpleNamespace(
-        async_load=AsyncMock(return_value=None),
-        async_save=AsyncMock(),
-        async_delay_save=Mock(),
-    )
-    return value
+# The coordinator fixture is shared from conftest.py.
 
 
 async def test_initialise_offline_requires_no_engine_and_starts_enabled(coordinator):
@@ -215,6 +180,7 @@ async def test_enabling_configures_only_and_never_replays_prior_output(coordinat
         auto_reconnect=True,
         manual_timeout_seconds=60,
         blocked_addresses=[],
+        known_addresses=[ADDRESS],
     )
     settings = coordinator._hello()
     assert "outputs" not in settings
@@ -237,6 +203,7 @@ async def test_per_device_connect_policy_is_persisted_and_sent_to_engine(coordin
         auto_reconnect=True,
         manual_timeout_seconds=60,
         blocked_addresses=[ADDRESS],
+        known_addresses=[],
     )
 
 
@@ -550,7 +517,8 @@ async def test_compatible_discovery_adds_and_persists_device_without_selection(c
         {"type": "discovered", "address": ADDRESS, "name": "advertising name"},
         coordinator.bridge.epoch,
     )
-    assert coordinator.devices[ADDRESS].name == "Test device"
+    # The device's own advertised name is learned and kept.
+    assert coordinator.devices[ADDRESS].name == "advertising name"
     assert len(coordinator.devices) == 1
 
 

@@ -12,13 +12,13 @@ spec.loader.exec_module(module)
 def test_no_backend_waits_for_proxy():
     assert module.classify_ble_failure(
         "No backend with an available connection slot that can reach address AA:BB was found"
-    ) == ("waiting_for_proxy", 60.0)
+    ) == ("waiting_for_proxy", 20.0)
 
 
 def test_timeout_cools_down():
     assert module.classify_ble_failure(
         "Timeout waiting for connect response while connecting after 20.0s"
-    ) == ("connection_timed_out", 45.0)
+    ) == ("connection_timed_out", 20.0)
 
 
 def test_transient_generic_error():

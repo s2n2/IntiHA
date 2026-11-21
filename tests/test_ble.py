@@ -786,3 +786,58 @@ async def test_link_dropped_before_use_rediscovers_services_next_time(radio):
     await radio.request("disconnect", "second")
     await radio.request("connect", "third")
     assert radio.cache_used == [True, False, True]
+
+
+# Optional We-Vibe status readback (replaces the old standalone scripts).
+CLASSIC_FRAME = bytes([1, 3, 0, 0, 0, 0, 0xF9, 2])
+
+
+async def _until(predicate, seconds=2.0):
+    async with asyncio.timeout(seconds):
+        while not predicate():
+            await asyncio.sleep(0.002)
+
+
+async def test_device_without_status_characteristic_reports_unsupported(radio):
+    await radio.request("connect")
+    connection = radio.bridge._connections[ADDRESS]
+    radio.bridge._start_device_report(connection)
+    await _until(lambda: any(e["type"] == "device_report_status" for e in radio.events))
+    status = [e for e in radio.events if e["type"] == "device_report_status"]
+    assert status[-1]["status"] == "unsupported"
+    assert status[-1]["connection_id"] == "first"
+    assert connection.report_task is None
+    assert not any(e["type"] == "device_report" for e in radio.events)
+    # Nothing was written to discover a feedback channel.
+    assert not [op for op in radio.clients[0].operations if op[0] == "write"]
+
+
+async def test_status_reads_recover_from_timeouts_and_stop_with_the_link(radio, monkeypatch):
+    monkeypatch.setattr(ble, "REPORT_INTERVAL", 0.005)
+    monkeypatch.setattr(ble, "REPORT_READ_TIMEOUT", 0.05)
+    await radio.request("connect")
+    connection = radio.bridge._connections[ADDRESS]
+    client = radio.clients[0]
+    info = SimpleNamespace(uuid=ble.WEVIBE_INFO, properties=["read"])
+    client.services.get_characteristic = lambda uuid: info if uuid == ble.WEVIBE_INFO else None
+    attempts = 0
+
+    async def read(_characteristic):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise TimeoutError("simulated slow proxy")
+        return bytearray(CLASSIC_FRAME)
+
+    client.read_gatt_char = read
+    radio.bridge._start_device_report(connection)
+    await _until(lambda: any(e["type"] == "device_report" for e in radio.events))
+    statuses = [e["status"] for e in radio.events if e["type"] == "device_report_status"]
+    assert "read_timeout" in statuses
+    assert "available" in statuses
+    report = next(e for e in radio.events if e["type"] == "device_report")
+    assert report["intensity"] == 100 and report["connection_id"] == "first"
+    assert not [op for op in client.operations if op[0] == "write"]
+    task = connection.report_task
+    await radio.request("disconnect")
+    await _until(task.done)
