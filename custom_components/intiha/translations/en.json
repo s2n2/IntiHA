@@ -260,11 +260,11 @@
         },
         "action": {
           "name": "Action",
-          "description": "status, hamp_start, hamp_velocity, hamp_zone, hamp_stop, hdsp or stroke_set."
+          "description": "status, hamp_start, hamp_velocity, hamp_zone, hamp_stop, hdsp, stroke_set or trace."
         },
         "velocity": {
           "name": "Velocity",
-          "description": "Built-in stroking speed."
+          "description": "Built-in stroking speed, 0 (slowest) to 1 (fastest)."
         },
         "lo": {
           "name": "Lower",
@@ -277,6 +277,30 @@
         "wait": {
           "name": "Wait",
           "description": "Seconds to collect the Handy's replies."
+        },
+        "ms": {
+          "name": "Duration",
+          "description": "Milliseconds for a direct move."
+        },
+        "hex": {
+          "name": "Raw packet",
+          "description": "A raw command, in hex."
+        },
+        "response": {
+          "name": "Acknowledged write",
+          "description": "Write with a Bluetooth acknowledgement."
+        },
+        "moves": {
+          "name": "Moves",
+          "description": "For trace: direct moves as [position %, ms] pairs, one after another."
+        },
+        "sample_ms": {
+          "name": "Sample interval",
+          "description": "For trace: how often the slider position is read, ms."
+        },
+        "tail_ms": {
+          "name": "Tail",
+          "description": "For trace: how long to keep sampling after the last move, ms."
         }
       }
     }

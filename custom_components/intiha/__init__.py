@@ -60,13 +60,16 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
         from . import handy as h
 
         action = call.data["action"]
+        if action == "trace":
+            return await _handy_trace(call)
         lo, hi = call.data["lo"] / 100, call.data["hi"] / 100
         velocity = call.data["velocity"]
         packets = {
             "hdsp_move": [h.hdsp_move(call.data["hi"] / 100, int(call.data["ms"]))],
             "raw": [h.raw(bytes.fromhex(call.data.get("hex", "").replace(" ", "")))],
             "status": [h.mode_get(), h.hamp_state(), h.stroke_get(), h.slider_state()],
-            "hamp_start": [h.mode_set(h.MODE_HAMP), h.hamp_zone(lo, hi), h.hamp_velocity(velocity), h.hamp_start(), h.hamp_state()],
+            # Starting resets the speed to 0, so the speed comes after the start.
+            "hamp_start": [h.mode_set(h.MODE_HAMP), h.hamp_zone(lo, hi), h.hamp_start(), h.hamp_velocity(velocity), h.hamp_state()],
             "stroke_set": [h.stroke_set(lo, hi), h.stroke_get()],
             "hamp_velocity": [h.hamp_velocity(velocity)],
             "hamp_zone": [h.hamp_zone(lo, hi)],
@@ -86,20 +89,54 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
             return {"sent": [rid for rid, _ in packets], "replies": [h.describe(r) for r in replies]}
         raise HomeAssistantError("IntiHA is not loaded")
 
+    async def _handy_trace(call: ServiceCall) -> ServiceResponse:
+        """Direct moves with the slider's own position sampled (a measuring tool)."""
+        from . import handy as h
+
+        moves = [(float(p) / 100, int(ms)) for p, ms in call.data["moves"]]
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            coordinator = getattr(entry, "runtime_data", None)
+            if coordinator is None:
+                continue
+            try:
+                lead, replies = await coordinator.ble.async_handy_trace(
+                    call.data["address"], moves, call.data["sample_ms"], call.data["tail_ms"]
+                )
+            except Exception as err:
+                raise HomeAssistantError(f"The Handy did not take the trace: {err}") from err
+            samples, notes = [], []
+            for when, _sent, data in replies:
+                d = h.describe(data)
+                state = next((f[1] for f in d.get("fields") or [] if f[0] == 842 and isinstance(f[1], list)), None)
+                if state is not None:
+                    values = dict((k, v) for k, v in state)
+                    samples.append([round((when - lead) * 1000), round(values.get(2, 0.0), 1), round(values.get(4, 0.0))])
+                elif d.get("type") == "notification":
+                    notes.append([round((when - lead) * 1000), d.get("fields")])
+            plan, at = [], 0
+            for xp, ms in moves:
+                plan.append([at, round(xp * 100), ms])
+                at += ms
+            return {"moves": plan, "samples": samples, "notes": notes}
+        raise HomeAssistantError("IntiHA is not loaded")
+
     hass.services.async_register(
         DOMAIN,
         "handy",
         handy,
         schema=vol.Schema({
             vol.Required("address"): cv.string,
-            vol.Required("action"): vol.In(("status", "hamp_start", "hamp_velocity", "hamp_zone", "hamp_stop", "hdsp", "hdsp_move", "raw", "stroke_set")),
+            vol.Required("action"): vol.In(("status", "hamp_start", "hamp_velocity", "hamp_zone", "hamp_stop", "hdsp", "hdsp_move", "raw", "stroke_set", "trace")),
             vol.Optional("ms", default=1000): vol.All(vol.Coerce(int), vol.Range(min=20, max=10000)),
             vol.Optional("hex", default=""): cv.string,
             vol.Optional("response", default=True): cv.boolean,
-            vol.Optional("velocity", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+            vol.Optional("velocity", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
             vol.Optional("lo", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
             vol.Optional("hi", default=100.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
             vol.Optional("wait", default=0.6): vol.All(vol.Coerce(float), vol.Range(min=0, max=5)),
+            vol.Optional("moves", default=[]): [vol.ExactSequence([vol.All(vol.Coerce(float), vol.Range(min=0, max=100)), vol.All(vol.Coerce(int), vol.Range(min=20, max=10000))])],
+            vol.Optional("sample_ms", default=50): vol.All(vol.Coerce(int), vol.Range(min=20, max=1000)),
+            vol.Optional("tail_ms", default=800): vol.All(vol.Coerce(int), vol.Range(min=0, max=5000)),
         }),
         supports_response=SupportsResponse.ONLY,
     )

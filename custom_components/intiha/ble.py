@@ -245,7 +245,7 @@ class _Connection:
     quick_answered: bool = False
     quick_failed: bool = False
     # The Handy's own commands (handy.py): its replies, while one is waited for.
-    raw_tap: list[bytes] | None = None
+    raw_tap: list[tuple[float, bytes]] | None = None   # (loop time, notification) while tapped
     pairing_requested: bool = False
     report_task: asyncio.Task[Any] | None = None
     battery_task: asyncio.Task[Any] | None = None
@@ -1422,7 +1422,7 @@ class BleBridge:
         connection = self._connections.get(address)
         if connection is None or not connection.client.is_connected:
             raise BleBridgeError("The device is not connected")
-        replies: list[bytes] = []
+        replies: list[tuple[float, bytes]] = []
         # The same characteristic object Buttplug's own writes use (not a UUID
         # string for the backend to resolve again).
         characteristic = self._characteristic(connection, handy.TX)
@@ -1447,7 +1447,51 @@ class BleBridge:
                 await asyncio.sleep(wait)
             finally:
                 connection.raw_tap = None
-        return replies
+        return [data for _, data in replies]
+
+    async def async_handy_trace(
+        self, address: str, moves: list[tuple[float, int]], sample_ms: int = 50, tail_ms: int = 800
+    ) -> tuple[float, list[tuple[float, float, bytes]]]:
+        """Run direct moves on The Handy while sampling where its slider is.
+
+        A measuring tool: moves ([xp 0-1, ms] one after another) and a
+        slider-state request every sample_ms, all on a timeline, then the
+        Handy's answers with the time each arrived (s after the start).
+        Returns (move start offset s, [(t, sent t, data)]).
+        """
+        address = self._validate_address(address)
+        connection = self._connections.get(address)
+        if connection is None or not connection.client.is_connected:
+            raise BleBridgeError("The device is not connected")
+        characteristic = self._characteristic(connection, handy.TX)
+        lead = 0.15   # the mode is set first
+        events: list[tuple[float, bytes]] = [(0.0, handy.mode_set(handy.MODE_HDSP)[1])]
+        at = lead
+        for xp, ms in moves:
+            events.append((at, handy.hdsp_move(xp, int(ms))[1]))
+            at += ms / 1000
+        end, s = at + tail_ms / 1000, 0.0
+        while s < end:
+            events.append((s + 0.001, handy.slider_state()[1]))
+            s += sample_ms / 1000
+        events.sort(key=lambda e: e[0])
+        loop = self._hass.loop
+        replies: list[tuple[float, bytes]] = []
+        async with self._locks.setdefault(address, asyncio.Lock()):
+            connection.raw_tap = replies
+            start = loop.time()
+            try:
+                for offset, data in events:
+                    delay = start + offset - loop.time()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    async with asyncio.timeout(IO_TIMEOUT):
+                        await connection.client.write_gatt_char(characteristic, data, response=False)
+                connection.last_write = loop.time()
+                await asyncio.sleep(0.3)
+            finally:
+                connection.raw_tap = None
+        return lead, [(when - start, 0.0, data) for when, data in replies]
 
     @staticmethod
     def _quick_stroker_write(
@@ -1645,7 +1689,7 @@ class BleBridge:
         ):
             return
         if connection.raw_tap is not None:
-            connection.raw_tap.append(bytes(data))
+            connection.raw_tap.append((self._hass.loop.time(), bytes(data)))
             _LOGGER.debug("Handy reply %s: %s", connection.address, data[:60].hex(" "))
         if connection.stop_hold:
             connection.quick_answered = True

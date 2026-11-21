@@ -44,12 +44,12 @@ handy:
       required: true
       selector:
         select:
-          options: [status, hamp_start, hamp_velocity, hamp_zone, hamp_stop, hdsp, hdsp_move, raw, stroke_set]
+          options: [status, hamp_start, hamp_velocity, hamp_zone, hamp_stop, hdsp, hdsp_move, raw, stroke_set, trace]
     velocity:
       selector:
         number:
           min: 0
-          max: 100
+          max: 1
           step: 0.01
     lo:
       selector:
@@ -78,3 +78,16 @@ handy:
     response:
       selector:
         boolean:
+    moves:
+      selector:
+        object:
+    sample_ms:
+      selector:
+        number:
+          min: 20
+          max: 1000
+    tail_ms:
+      selector:
+        number:
+          min: 0
+          max: 5000
