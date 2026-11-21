@@ -915,8 +915,9 @@ def test_handy_commands_are_encoded_as_the_published_protocol():
     _rid, packet = handy.mode_set(handy.MODE_HDSP)
     fields = handy._fields(packet)
     assert fields[0] == (1, 0, 1)                         # a request
-    request = handy._fields(fields[1][2])
-    assert request[1][0] == 701 and handy._fields(request[1][2]) == [(1, 0, 2)]
+    request = {f: v for f, _, v in handy._fields(fields[1][2])}
+    assert request[2] == _rid                             # Request.id is field 2
+    assert handy._fields(request[701]) == [(1, 0, 2)]
     _rid, zone = handy.hamp_zone(0.25, 0.75)
-    body = handy._fields(handy._fields(handy._fields(zone)[1][2])[1][2])
+    body = handy._fields({f: v for f, _, v in handy._fields(handy._fields(zone)[1][2])}[725])
     assert [round(v, 2) for _, _, v in body] == [0.25, 0.75]

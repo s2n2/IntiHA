@@ -71,7 +71,7 @@ def _msg(field: int, body: bytes) -> bytes:
 def request(param: int, body: bytes = b"") -> tuple[int, bytes]:
     """One RpcMessage{type: REQUEST, request: {id, <param>: body}}; returns (id, bytes)."""
     rid = next(_ids)
-    req = _uint(1, rid) + _msg(param, body)
+    req = _msg(param, body) + _uint(2, rid)   # Request.id is field 2
     return rid, _uint(1, 1) + _msg(2, req)
 
 
