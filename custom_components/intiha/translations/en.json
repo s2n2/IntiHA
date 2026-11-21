@@ -260,7 +260,7 @@
         },
         "action": {
           "name": "Action",
-          "description": "status, hamp_start, hamp_velocity, hamp_zone, hamp_stop or hdsp."
+          "description": "status, hamp_start, hamp_velocity, hamp_zone, hamp_stop, hdsp or stroke_set."
         },
         "velocity": {
           "name": "Velocity",

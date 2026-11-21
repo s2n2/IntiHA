@@ -33,6 +33,7 @@ _HAMP_STATE = 724
 _HAMP_ZONE = 725
 _HDSP_STOP = 746
 _STROKE_GET = 840
+_STROKE_SET = 841
 _SLIDER_STATE = 842
 
 _ids = itertools.count(40000)
@@ -118,6 +119,11 @@ def hdsp_stop() -> tuple[int, bytes]:
 
 def stroke_get() -> tuple[int, bytes]:
     return request(_STROKE_GET)
+
+
+def stroke_set(lo: float, hi: float) -> tuple[int, bytes]:
+    """The device's own stroke zone (0-1 of the full slide)."""
+    return request(_STROKE_SET, _float(1, lo) + _float(2, hi))
 
 
 def slider_state() -> tuple[int, bytes]:

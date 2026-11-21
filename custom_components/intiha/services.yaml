@@ -44,7 +44,7 @@ handy:
       required: true
       selector:
         select:
-          options: [status, hamp_start, hamp_velocity, hamp_zone, hamp_stop, hdsp, hdsp_move, raw]
+          options: [status, hamp_start, hamp_velocity, hamp_zone, hamp_stop, hdsp, hdsp_move, raw, stroke_set]
     velocity:
       selector:
         number:

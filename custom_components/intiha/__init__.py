@@ -66,7 +66,8 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
             "hdsp_move": [h.hdsp_move(call.data["hi"] / 100, int(call.data["ms"]))],
             "raw": [h.raw(bytes.fromhex(call.data.get("hex", "").replace(" ", "")))],
             "status": [h.mode_get(), h.hamp_state(), h.stroke_get(), h.slider_state()],
-            "hamp_start": [h.mode_set(h.MODE_HAMP), h.hamp_zone(lo, hi), h.hamp_velocity(velocity), h.hamp_start()],
+            "hamp_start": [h.mode_set(h.MODE_HAMP), h.hamp_zone(lo, hi), h.hamp_velocity(velocity), h.hamp_start(), h.hamp_state()],
+            "stroke_set": [h.stroke_set(lo, hi), h.stroke_get()],
             "hamp_velocity": [h.hamp_velocity(velocity)],
             "hamp_zone": [h.hamp_zone(lo, hi)],
             "hamp_stop": [h.hamp_stop(), h.mode_set(h.MODE_HDSP)],
@@ -91,7 +92,7 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
         handy,
         schema=vol.Schema({
             vol.Required("address"): cv.string,
-            vol.Required("action"): vol.In(("status", "hamp_start", "hamp_velocity", "hamp_zone", "hamp_stop", "hdsp", "hdsp_move", "raw")),
+            vol.Required("action"): vol.In(("status", "hamp_start", "hamp_velocity", "hamp_zone", "hamp_stop", "hdsp", "hdsp_move", "raw", "stroke_set")),
             vol.Optional("ms", default=1000): vol.All(vol.Coerce(int), vol.Range(min=20, max=10000)),
             vol.Optional("hex", default=""): cv.string,
             vol.Optional("response", default=True): cv.boolean,

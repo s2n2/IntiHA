@@ -262,6 +262,9 @@ class _Connection:
     opened: float = 0.0
 
 
+HANDY_ANSWER_WAIT = 0.5   # s: how long one of the Handy's own commands may take to answer
+
+
 class BleBridge:
     """Provide bounded BLE RPCs and discovery through HA's Bluetooth manager.
 
@@ -594,8 +597,8 @@ class BleBridge:
                         )
                         if _LOGGER.isEnabledFor(logging.DEBUG):
                             _LOGGER.debug(
-                                "BLE write %s: %d bytes, response=%s, %.0f ms",
-                                address, len(write.data), write.response,
+                                "BLE write %s: %d bytes, response=%s, handle %s, %.0f ms",
+                                address, len(write.data), write.response, getattr(characteristic, "handle", "?"),
                                 (self._hass.loop.time() - started) * 1000,
                             )
                         self._after_chorus_write(connection, uuid, bytes(write.data), write.response)
@@ -1420,14 +1423,27 @@ class BleBridge:
         if connection is None or not connection.client.is_connected:
             raise BleBridgeError("The device is not connected")
         replies: list[bytes] = []
+        # The same characteristic object Buttplug's own writes use (not a UUID
+        # string for the backend to resolve again).
+        characteristic = self._characteristic(connection, handy.TX)
         async with self._locks.setdefault(address, asyncio.Lock()):
             connection.raw_tap = replies
             try:
                 for data in packets:
                     async with asyncio.timeout(IO_TIMEOUT):
-                        await connection.client.write_gatt_char(handy.TX, data, response=response)
-                    _LOGGER.debug("Handy command %s: %s (response=%s)", address, data.hex(" "), response)
+                        await connection.client.write_gatt_char(characteristic, data, response=response)
+                    _LOGGER.debug(
+                        "Handy command %s: %s (response=%s, handle %s)",
+                        address, data.hex(" "), response, getattr(characteristic, "handle", "?"),
+                    )
                     connection.last_write = self._hass.loop.time()
+                    # One at a time: wait for the answer (or a moment) before
+                    # the next, so the Handy takes them in order.
+                    seen = len(replies)
+                    for _ in range(int(HANDY_ANSWER_WAIT / 0.02)):
+                        if len(replies) > seen:
+                            break
+                        await asyncio.sleep(0.02)
                 await asyncio.sleep(wait)
             finally:
                 connection.raw_tap = None
@@ -1630,6 +1646,7 @@ class BleBridge:
             return
         if connection.raw_tap is not None:
             connection.raw_tap.append(bytes(data))
+            _LOGGER.debug("Handy reply %s: %s", connection.address, data[:60].hex(" "))
         if connection.stop_hold:
             connection.quick_answered = True
         if connection.stop_hold and _LOGGER.isEnabledFor(logging.DEBUG):
