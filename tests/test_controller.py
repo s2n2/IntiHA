@@ -245,7 +245,9 @@ async def test_slow_scan_does_not_block_output_timeout(native_server, controller
     key = next(iter(ctl.devices))
     await ctl.set_vibration(key, 0, 10)
     await eventually(lambda: len(server.of_kind("StopDeviceCmd")) >= 2, timeout=1.6)
-    assert ctl.devices[key].values[0] == 0
+    # The value drops once the stop is acknowledged, a moment after the
+    # server receives it.
+    await eventually(lambda: ctl.devices[key].values[0] == 0, timeout=0.5)
 
 
 async def test_native_scan_error_does_not_unload_ready_device(native_server, controllers):
